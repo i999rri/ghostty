@@ -210,7 +210,8 @@ fn preferredLanguageFromCocoa(
     return slice[0 .. slice.len - 1 :0];
 }
 
-const LC_ALL: c_int = 6; // from locale.h
+const c_locale = @cImport(@cInclude("locale.h"));
+const LC_ALL: c_int = c_locale.LC_ALL;
 const LC_ALL_MASK: c_int = 0x7fffffff; // from locale.h
 const locale_t = ?*anyopaque;
 extern "c" fn setlocale(category: c_int, locale: ?[*]const u8) ?[*:0]u8;
