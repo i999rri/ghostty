@@ -250,6 +250,23 @@ fn collection(
         }
     }
 
+    // On Windows with no font discovery, try to find font-family by scanning
+    // C:\Windows\Fonts directory for matching filenames.
+    if (comptime builtin.os.tag == .windows and Discover == void) {
+        for (key.descriptorsForStyle(.regular)) |desc| {
+            if (desc.family) |family| {
+                if (findWindowsFont(self.font_lib, family, load_options.faceOptions())) |face| {
+                    log.info("Windows font found: {s}", .{family});
+                    _ = try c.add(self.alloc, face, .{
+                        .style = .regular,
+                        .fallback = false,
+                        .size_adjustment = .none,
+                    });
+                }
+            }
+        }
+    }
+
     // Complete our styles to ensure we have something to satisfy every
     // possible style request. We do this before adding our built-in font
     // because we want to ensure our built-in styles are fallbacks to
@@ -386,7 +403,99 @@ fn collection(
         );
     }
 
+    // On Windows, add system CJK font as fallback for non-ASCII characters.
+    // The freetype backend has no font discovery, so we load system fonts
+    // directly by file path.
+    if (comptime builtin.os.tag == .windows) {
+        // Try common CJK fallback fonts
+        const cjk_fonts = [_][:0]const u8{
+            "C:\\Windows\\Fonts\\msgothic.ttc",
+            "C:\\Windows\\Fonts\\meiryo.ttc",
+            "C:\\Windows\\Fonts\\YuGothR.ttc",
+            "C:\\Windows\\Fonts\\malgun.ttf",
+        };
+        for (cjk_fonts) |font_path| {
+            _ = c.add(
+                self.alloc,
+                font.face.Face.initFile(
+                    self.font_lib,
+                    font_path,
+                    0,
+                    load_options.faceOptions(),
+                ) catch continue,
+                .{
+                    .style = .regular,
+                    .fallback = true,
+                    .size_adjustment = .none,
+                },
+            ) catch continue;
+            break; // Only need one CJK fallback
+        }
+    }
+
     return c;
+}
+
+/// Find a font by family name in the Windows Fonts directory.
+/// Uses the Windows registry to map font names to file paths.
+fn findWindowsFont(
+    lib: font.Library,
+    family: [:0]const u8,
+    opts: font.face.Options,
+) ?font.face.Face {
+    const win32 = struct {
+        extern "advapi32" fn RegOpenKeyExW(
+            hKey: ?*anyopaque,
+            lpSubKey: [*:0]const u16,
+            ulOptions: u32,
+            samDesired: u32,
+            phkResult: *?*anyopaque,
+        ) callconv(.winapi) i32;
+        extern "advapi32" fn RegCloseKey(hKey: ?*anyopaque) callconv(.winapi) i32;
+        extern "advapi32" fn RegEnumValueW(
+            hKey: ?*anyopaque,
+            dwIndex: u32,
+            lpValueName: [*]u16,
+            lpcchValueName: *u32,
+            lpReserved: ?*u32,
+            lpType: ?*u32,
+            lpData: ?[*]u8,
+            lpcbData: ?*u32,
+        ) callconv(.winapi) u32;
+    };
+
+    const key_path = std.unicode.utf8ToUtf16LeStringLiteral("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts");
+    var hkey: ?*anyopaque = undefined;
+    if (win32.RegOpenKeyExW(@ptrFromInt(0x80000002), key_path, 0, 0x20019, &hkey) != 0) return null;
+    defer _ = win32.RegCloseKey(hkey);
+
+    var index: u32 = 0;
+    var name_buf: [512]u16 = undefined;
+    var data_buf: [512]u8 = undefined;
+
+    while (true) : (index += 1) {
+        var name_len: u32 = name_buf.len;
+        var data_len: u32 = data_buf.len;
+        if (win32.RegEnumValueW(hkey, index, &name_buf, &name_len, null, null, &data_buf, &data_len) != 0) break;
+
+        var name_utf8_buf: [512]u8 = undefined;
+        const name_utf8_len = std.unicode.utf16LeToUtf8(&name_utf8_buf, name_buf[0..name_len]) catch continue;
+
+        if (std.ascii.indexOfIgnoreCase(name_utf8_buf[0..name_utf8_len], family)) |_| {
+            const data_utf16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, data_buf[0..data_len]));
+            var filename_buf: [512]u8 = undefined;
+            const filename_len = std.unicode.utf16LeToUtf8(&filename_buf, data_utf16[0 .. data_len / 2 - 1]) catch continue;
+
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const full_path = std.fmt.bufPrint(&path_buf, "C:\\Windows\\Fonts\\{s}", .{filename_buf[0..filename_len]}) catch continue;
+            // Need null-terminated for initFile
+            path_buf[full_path.len] = 0;
+            const path_z: [:0]const u8 = path_buf[0..full_path.len :0];
+
+            return font.face.Face.initFile(lib, path_z, 0, opts) catch continue;
+        }
+    }
+    return null;
 }
 
 /// Decrement the ref count for the given key. If the ref count is zero,
