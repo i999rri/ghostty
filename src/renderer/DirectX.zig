@@ -31,37 +31,45 @@ const log = std.log.scoped(.directx);
 
 // C API from d3d11_impl.c
 pub const dx = struct {
-    extern fn dx_create(?*anyopaque, u32, u32) ?*anyopaque;
-    extern fn dx_destroy(?*anyopaque) void;
-    extern fn dx_resize(?*anyopaque, u32, u32) void;
-    extern fn dx_present(?*anyopaque, bool) void;
-    extern fn dx_clear(?*anyopaque, f32, f32, f32, f32) void;
-    extern fn dx_set_viewport(?*anyopaque, u32, u32) void;
-    extern fn dx_bind_backbuffer(?*anyopaque) void;
-    extern fn dx_set_blend_enabled(?*anyopaque, bool) void;
-    extern fn dx_get_backbuffer_size(?*anyopaque, *u32, *u32) void;
-    extern fn dx_draw(?*anyopaque, u32, u32) void;
-    extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32) void;
+    pub extern fn dx_create(?*anyopaque, u32, u32) ?*anyopaque;
+    pub extern fn dx_destroy(?*anyopaque) void;
+    pub extern fn dx_resize(?*anyopaque, u32, u32) void;
+    pub extern fn dx_present(?*anyopaque, bool) void;
+    pub extern fn dx_clear(?*anyopaque, f32, f32, f32, f32) void;
+    pub extern fn dx_set_viewport(?*anyopaque, u32, u32) void;
+    pub extern fn dx_bind_backbuffer(?*anyopaque) void;
+    pub extern fn dx_set_blend_enabled(?*anyopaque, bool) void;
+    pub extern fn dx_get_backbuffer_size(?*anyopaque, *u32, *u32) void;
+    pub extern fn dx_draw(?*anyopaque, u32, u32) void;
+    pub extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32) void;
 
-    extern fn dx_create_buffer(?*anyopaque, u32, u32, ?*const anyopaque) ?*anyopaque;
-    extern fn dx_destroy_buffer(?*anyopaque) void;
-    extern fn dx_update_buffer(?*anyopaque, ?*anyopaque, ?*const anyopaque, u32) void;
-    extern fn dx_bind_vertex_buffer(?*anyopaque, ?*anyopaque, u32, u32) void;
-    extern fn dx_bind_constant_buffer(?*anyopaque, ?*anyopaque, u32, bool, bool) void;
-    extern fn dx_bind_srv_buffer(?*anyopaque, ?*anyopaque, u32, u32) void;
+    pub const CompiledShader = extern struct { bytecode: ?*anyopaque, size: u32 };
+    pub extern fn dx_compile_shader(?[*]const u8, u32, [*:0]const u8, [*:0]const u8) CompiledShader;
+    pub extern fn dx_free_compiled_shader(CompiledShader) void;
 
-    extern fn dx_create_texture(?*anyopaque, u32, u32, u32, ?*const anyopaque) ?*anyopaque;
-    extern fn dx_destroy_texture(?*anyopaque) void;
-    extern fn dx_update_texture_region(?*anyopaque, ?*anyopaque, u32, u32, u32, u32, ?*const anyopaque) void;
-    extern fn dx_bind_texture(?*anyopaque, ?*anyopaque, u32) void;
+    pub extern fn dx_create_buffer(?*anyopaque, u32, u32, ?*const anyopaque) ?*anyopaque;
+    pub extern fn dx_destroy_buffer(?*anyopaque) void;
+    pub extern fn dx_update_buffer(?*anyopaque, ?*anyopaque, ?*const anyopaque, u32) void;
+    pub extern fn dx_bind_vertex_buffer(?*anyopaque, ?*anyopaque, u32, u32) void;
+    pub extern fn dx_bind_constant_buffer(?*anyopaque, ?*anyopaque, u32, bool, bool) void;
+    pub extern fn dx_bind_srv_buffer(?*anyopaque, ?*anyopaque, u32, u32) void;
 
-    extern fn dx_create_sampler(?*anyopaque, u32, u32) ?*anyopaque;
-    extern fn dx_destroy_sampler(?*anyopaque) void;
-    extern fn dx_bind_sampler(?*anyopaque, ?*anyopaque, u32) void;
+    pub extern fn dx_create_texture(?*anyopaque, u32, u32, u32, ?*const anyopaque) ?*anyopaque;
+    pub extern fn dx_destroy_texture(?*anyopaque) void;
+    pub extern fn dx_update_texture_region(?*anyopaque, ?*anyopaque, u32, u32, u32, u32, ?*const anyopaque) void;
+    pub extern fn dx_bind_texture(?*anyopaque, ?*anyopaque, u32) void;
 
-    extern fn dx_create_render_target(?*anyopaque, u32, u32, u32) ?*anyopaque;
-    extern fn dx_destroy_render_target(?*anyopaque) void;
-    extern fn dx_bind_render_target(?*anyopaque, ?*anyopaque) void;
+    pub extern fn dx_create_sampler(?*anyopaque, u32, u32) ?*anyopaque;
+    pub extern fn dx_destroy_sampler(?*anyopaque) void;
+    pub extern fn dx_bind_sampler(?*anyopaque, ?*anyopaque, u32) void;
+
+    pub extern fn dx_create_pipeline(?*anyopaque, ?*anyopaque, u32, ?*anyopaque, u32, ?*anyopaque, u32) ?*anyopaque;
+    pub extern fn dx_destroy_pipeline(?*anyopaque) void;
+    pub extern fn dx_bind_pipeline(?*anyopaque, ?*anyopaque) void;
+
+    pub extern fn dx_create_render_target(?*anyopaque, u32, u32, u32) ?*anyopaque;
+    pub extern fn dx_destroy_render_target(?*anyopaque) void;
+    pub extern fn dx_bind_render_target(?*anyopaque, ?*anyopaque) void;
 };
 
 alloc: std.mem.Allocator,
