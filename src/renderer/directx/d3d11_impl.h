@@ -69,6 +69,15 @@ void dx_set_blend_enabled(DxDevice* dev, bool enabled);
 // Query
 void dx_get_backbuffer_size(DxDevice* dev, uint32_t* width, uint32_t* height);
 
+// Shader compilation
+typedef struct DxCompiledShader {
+    void* bytecode;
+    uint32_t size;
+} DxCompiledShader;
+DxCompiledShader dx_compile_shader(const char* source, uint32_t source_len,
+                                    const char* entry_point, const char* target);
+void dx_free_compiled_shader(DxCompiledShader shader);
+
 #ifdef __cplusplus
 }
 #endif

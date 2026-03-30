@@ -437,3 +437,38 @@ void dx_draw_instanced(DxDevice* dev, uint32_t vertex_count, uint32_t instance_c
     ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     ID3D11DeviceContext_DrawInstanced(dev->context, vertex_count, instance_count, start_vertex, start_instance);
 }
+
+// --- Shader compilation ---
+
+DxCompiledShader dx_compile_shader(const char* source, uint32_t source_len,
+                                    const char* entry_point, const char* target) {
+    DxCompiledShader result = {0};
+    ID3DBlob* blob = NULL;
+    ID3DBlob* errors = NULL;
+
+    HRESULT hr = D3DCompile(source, source_len, NULL, NULL, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+        entry_point, target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &errors);
+
+    if (FAILED(hr)) {
+        if (errors) {
+            OutputDebugStringA("HLSL compile error: ");
+            OutputDebugStringA((const char*)ID3D10Blob_GetBufferPointer(errors));
+            OutputDebugStringA("\n");
+            ID3D10Blob_Release(errors);
+        }
+        return result;
+    }
+    if (errors) ID3D10Blob_Release(errors);
+
+    result.size = (uint32_t)ID3D10Blob_GetBufferSize(blob);
+    result.bytecode = malloc(result.size);
+    if (result.bytecode) {
+        memcpy(result.bytecode, ID3D10Blob_GetBufferPointer(blob), result.size);
+    }
+    ID3D10Blob_Release(blob);
+    return result;
+}
+
+void dx_free_compiled_shader(DxCompiledShader shader) {
+    free(shader.bytecode);
+}
