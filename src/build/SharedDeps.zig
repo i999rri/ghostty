@@ -413,6 +413,11 @@ pub fn add(
     step.linkLibC();
     step.addIncludePath(b.path("src/stb"));
     step.addCSourceFiles(.{ .files = &.{"src/stb/stb.c"} });
+    // DirectX 11 renderer C implementation
+    if (step.rootModuleTarget().os.tag == .windows) {
+        step.addCSourceFiles(.{ .files = &.{"src/renderer/directx/d3d11_impl.c"} });
+        step.addIncludePath(b.path("src/renderer/directx"));
+    }
     if (step.rootModuleTarget().os.tag == .linux) {
         step.addIncludePath(b.path("src/apprt/gtk"));
     }
