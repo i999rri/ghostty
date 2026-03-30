@@ -71,7 +71,11 @@ pub fn step(self: *Self, s: Step) void {
     if (s.pipeline.handle) |pipe| {
         dx.dx_bind_pipeline(dev, pipe);
     } else {
-        return; // Pipeline not compiled, skip this draw
+        const k32 = struct {
+            extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
+        };
+        k32.OutputDebugStringA("RenderPass.step: pipeline handle is null, skipping\n");
+        return;
     }
 
     // Set blend state
