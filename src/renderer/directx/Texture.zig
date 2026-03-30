@@ -23,11 +23,12 @@ pub const Options = struct {
 
 width: usize,
 height: usize,
-// TODO: ID3D11Texture2D, ID3D11ShaderResourceView
+dx_handle: ?*anyopaque = null, // DxTexture*
 
 pub fn init(opts: Options, width: usize, height: usize, data: ?[]const u8) Error!Self {
     _ = opts;
     _ = data;
+    // TODO: call dx_create_texture when device is available
     return .{
         .width = width,
         .height = height,
@@ -36,6 +37,7 @@ pub fn init(opts: Options, width: usize, height: usize, data: ?[]const u8) Error
 
 pub fn deinit(self: Self) void {
     _ = self;
+    // TODO: dx_destroy_texture
 }
 
 pub fn replaceRegion(self: *Self, offset_x: usize, offset_y: usize, rep_width: usize, rep_height: usize, data: []const u8) !void {
@@ -45,5 +47,5 @@ pub fn replaceRegion(self: *Self, offset_x: usize, offset_y: usize, rep_width: u
     _ = rep_width;
     _ = rep_height;
     _ = data;
-    // TODO: UpdateSubresource or Map/Unmap to update texture region
+    // TODO: dx_update_texture_region
 }

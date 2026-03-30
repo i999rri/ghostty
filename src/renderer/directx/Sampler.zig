@@ -14,13 +14,15 @@ pub const Options = struct {
     pub const Wrap = enum { clamp_to_edge, repeat };
 };
 
-// TODO: ID3D11SamplerState
+dx_handle: ?*anyopaque = null, // DxSampler*
 
 pub fn init(opts: Options) Error!Self {
     _ = opts;
+    // TODO: call dx_create_sampler when device is available
     return .{};
 }
 
 pub fn deinit(self: Self) void {
     _ = self;
+    // TODO: dx_destroy_sampler
 }

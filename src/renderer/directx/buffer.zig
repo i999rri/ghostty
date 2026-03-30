@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const RawBuffer = *anyopaque;
+pub const RawBuffer = ?*anyopaque;
 
 pub const Options = struct {
     target: Target = .array,
@@ -24,34 +24,33 @@ pub fn Buffer(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        buffer: ?RawBuffer = null,
+        buffer: RawBuffer = null,
         opts: Options,
         len: usize,
 
         pub fn init(opts: Options, len: usize) !Self {
-            _ = opts;
             return .{
-                .opts = .{},
+                .opts = opts,
                 .len = len,
             };
         }
 
         pub fn initFill(opts: Options, data: []const T) !Self {
-            _ = opts;
             return .{
-                .opts = .{},
+                .opts = opts,
                 .len = data.len,
             };
         }
 
         pub fn deinit(self: Self) void {
             _ = self;
+            // TODO: dx_destroy_buffer
         }
 
         pub fn sync(self: *Self, data: []const T) !void {
             _ = self;
             _ = data;
-            // TODO: Map/Unmap D3D11 buffer
+            // TODO: dx_update_buffer
         }
 
         pub fn syncFromArrayLists(self: *Self, lists: anytype) !usize {
@@ -61,11 +60,6 @@ pub fn Buffer(comptime T: type) type {
                 total += list.items.len;
             }
             return total;
-        }
-
-        pub fn rawBuffer(self: Self) ?RawBuffer {
-            _ = self;
-            return null;
         }
     };
 }

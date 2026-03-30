@@ -18,12 +18,11 @@ pub fn begin(renderer: *Renderer, target: *Target) !Self {
 }
 
 pub fn renderPass(self: *const Self, attachments: []const RenderPass.Options.Attachment) RenderPass {
-    _ = self;
-    return RenderPass.begin(.{ .attachments = attachments });
+    // Pass device handle from the renderer's API
+    return RenderPass.begin(self.renderer.api.device, .{ .attachments = attachments });
 }
 
 pub fn complete(self: *const Self, sync: bool) void {
     _ = self;
     _ = sync;
-    // TODO: Present swap chain
 }

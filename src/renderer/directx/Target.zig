@@ -12,7 +12,7 @@ pub const Options = struct {
 
 width: u32,
 height: u32,
-// TODO: ID3D11RenderTargetView, ID3D11Texture2D
+rt_handle: ?*anyopaque = null, // DxRenderTarget*
 
 pub fn init(opts: Options) !Self {
     return .{
@@ -22,5 +22,6 @@ pub fn init(opts: Options) !Self {
 }
 
 pub fn deinit(self: *Self) void {
+    // TODO: dx_destroy_render_target if rt_handle is set
     self.* = undefined;
 }
