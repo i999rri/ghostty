@@ -1,6 +1,5 @@
 //! Graphics API wrapper for DirectX 11.
-//! This is a native Windows renderer that translates the Ghostty renderer
-//! interface to Direct3D 11 API calls.
+//! Uses a C implementation (d3d11_impl.c) for the COM-based D3D11 API.
 pub const DirectX = @This();
 
 const std = @import("std");
@@ -25,26 +24,50 @@ pub const Texture = @import("directx/Texture.zig");
 pub const shaders = @import("directx/shaders.zig");
 
 pub const custom_shader_target: shadertoy.Target = .glsl;
-// DirectX uses Y-down coordinate system (same as Metal)
 pub const custom_shader_y_is_down = true;
-
-/// DirectX uses a swap chain for presentation (double buffering)
 pub const swap_chain_count = 2;
 
 const log = std.log.scoped(.directx);
 
+// C API from d3d11_impl.c
+pub const dx = struct {
+    extern fn dx_create(?*anyopaque, u32, u32) ?*anyopaque;
+    extern fn dx_destroy(?*anyopaque) void;
+    extern fn dx_resize(?*anyopaque, u32, u32) void;
+    extern fn dx_present(?*anyopaque, bool) void;
+    extern fn dx_clear(?*anyopaque, f32, f32, f32, f32) void;
+    extern fn dx_set_viewport(?*anyopaque, u32, u32) void;
+    extern fn dx_bind_backbuffer(?*anyopaque) void;
+    extern fn dx_set_blend_enabled(?*anyopaque, bool) void;
+    extern fn dx_get_backbuffer_size(?*anyopaque, *u32, *u32) void;
+    extern fn dx_draw(?*anyopaque, u32, u32) void;
+    extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32) void;
+
+    extern fn dx_create_buffer(?*anyopaque, u32, u32, ?*const anyopaque) ?*anyopaque;
+    extern fn dx_destroy_buffer(?*anyopaque) void;
+    extern fn dx_update_buffer(?*anyopaque, ?*anyopaque, ?*const anyopaque, u32) void;
+    extern fn dx_bind_vertex_buffer(?*anyopaque, ?*anyopaque, u32, u32) void;
+    extern fn dx_bind_constant_buffer(?*anyopaque, ?*anyopaque, u32, bool, bool) void;
+    extern fn dx_bind_srv_buffer(?*anyopaque, ?*anyopaque, u32, u32) void;
+
+    extern fn dx_create_texture(?*anyopaque, u32, u32, u32, ?*const anyopaque) ?*anyopaque;
+    extern fn dx_destroy_texture(?*anyopaque) void;
+    extern fn dx_update_texture_region(?*anyopaque, ?*anyopaque, u32, u32, u32, u32, ?*const anyopaque) void;
+    extern fn dx_bind_texture(?*anyopaque, ?*anyopaque, u32) void;
+
+    extern fn dx_create_sampler(?*anyopaque, u32, u32) ?*anyopaque;
+    extern fn dx_destroy_sampler(?*anyopaque) void;
+    extern fn dx_bind_sampler(?*anyopaque, ?*anyopaque, u32) void;
+
+    extern fn dx_create_render_target(?*anyopaque, u32, u32, u32) ?*anyopaque;
+    extern fn dx_destroy_render_target(?*anyopaque) void;
+    extern fn dx_bind_render_target(?*anyopaque, ?*anyopaque) void;
+};
+
 alloc: std.mem.Allocator,
-
-/// Alpha blending mode
 blending: configpkg.Config.AlphaBlending,
-
-/// The most recently presented target
 last_target: ?Target = null,
-
-// TODO: Direct3D 11 resources
-// device: *ID3D11Device,
-// context: *ID3D11DeviceContext,
-// swap_chain: *IDXGISwapChain,
+device: ?*anyopaque = null,
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
     log.info("initializing DirectX 11 renderer", .{});
@@ -55,13 +78,13 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
 }
 
 pub fn deinit(self: *DirectX) void {
+    if (self.device) |dev| dx.dx_destroy(dev);
     self.* = undefined;
 }
 
 pub fn surfaceInit(surface: *apprt.Surface) !void {
     _ = surface;
-    // TODO: Create D3D11 device and swap chain from HWND
-    log.info("DirectX surface init", .{});
+    log.info("DirectX surfaceInit (device created in threadEnter)", .{});
 }
 
 pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void {
@@ -70,9 +93,28 @@ pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void 
 }
 
 pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
-    _ = self;
-    _ = surface;
-    // TODO: D3D11 is single-threaded by default, may need deferred context
+    // DirectX is Windows-only
+    if (comptime builtin.os.tag != .windows) return;
+
+    const platform = surface.platform.windows;
+    const hwnd: ?*anyopaque = @ptrCast(platform.hwnd);
+
+    const win32 = struct {
+        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
+    };
+    var rect: win32.RECT = undefined;
+    _ = win32.GetClientRect(hwnd, &rect);
+    const w: u32 = @intCast(rect.right - rect.left);
+    const h: u32 = @intCast(rect.bottom - rect.top);
+
+    const dev = dx.dx_create(hwnd, w, h) orelse {
+        log.err("failed to create D3D11 device", .{});
+        return error.DirectXFailed;
+    };
+    const self_mut: *DirectX = @constCast(self);
+    self_mut.device = dev;
+    log.info("D3D11 device created ({d}x{d})", .{ w, h });
 }
 
 pub fn threadExit(self: *const DirectX) void {
@@ -84,18 +126,25 @@ pub fn displayRealized(self: *const DirectX) void {
 }
 
 pub fn drawFrameStart(self: *DirectX) void {
-    _ = self;
-    // TODO: Begin frame, clear render target
+    if (self.device) |dev| {
+        dx.dx_bind_backbuffer(dev);
+        dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
+    }
 }
 
 pub fn drawFrameEnd(self: *DirectX) void {
-    _ = self;
-    // TODO: Present swap chain
+    if (self.device) |dev| {
+        dx.dx_present(dev, false);
+    }
 }
 
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
-    _ = self;
-    // TODO: Query swap chain back buffer size
+    if (self.device) |dev| {
+        var w: u32 = 0;
+        var h: u32 = 0;
+        dx.dx_get_backbuffer_size(dev, &w, &h);
+        return .{ .width = w, .height = h };
+    }
     return .{ .width = 960, .height = 640 };
 }
 
@@ -123,12 +172,12 @@ pub fn beginFrame(self: *DirectX, renderer: *Renderer, target: *Target) !Frame {
 
 pub fn present(self: *DirectX, target: Target) !void {
     self.last_target = target;
-    // TODO: Present to swap chain
 }
 
 pub fn presentLastTarget(self: *DirectX) !void {
-    _ = self;
-    // TODO: Re-present previous frame
+    if (self.device) |dev| {
+        dx.dx_present(dev, false);
+    }
 }
 
 pub fn initAtlasTexture(self: *const DirectX, atlas: anytype) !Texture {
@@ -138,9 +187,7 @@ pub fn initAtlasTexture(self: *const DirectX, atlas: anytype) !Texture {
         .bgra => .bgra,
         else => .rgba,
     };
-    return Texture.init(.{
-        .format = format,
-    }, atlas.size, atlas.size, atlas.data);
+    return Texture.init(.{ .format = format }, atlas.size, atlas.size, atlas.data);
 }
 
 pub fn initTexture(self: *const DirectX, opts: anytype) !Texture {
