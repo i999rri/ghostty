@@ -29,6 +29,9 @@ pub const swap_chain_count = 2;
 
 const log = std.log.scoped(.directx);
 
+/// Thread-local device handle, accessible by Buffer/Texture/etc.
+pub threadlocal var current_device: ?*anyopaque = null;
+
 // C API from d3d11_impl.c
 pub const dx = struct {
     pub extern fn dx_create(?*anyopaque, u32, u32) ?*anyopaque;
@@ -122,6 +125,7 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     };
     const self_mut: *DirectX = @constCast(self);
     self_mut.device = dev;
+    current_device = dev;
     log.info("D3D11 device created ({d}x{d})", .{ w, h });
 }
 
@@ -135,8 +139,11 @@ pub fn displayRealized(self: *const DirectX) void {
 
 pub fn drawFrameStart(self: *DirectX) void {
     if (self.device) |dev| {
+        var w: u32 = 0;
+        var h: u32 = 0;
+        dx.dx_get_backbuffer_size(dev, &w, &h);
+        dx.dx_set_viewport(dev, w, h);
         dx.dx_bind_backbuffer(dev);
-        dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
     }
 }
 

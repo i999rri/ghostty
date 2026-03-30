@@ -1,4 +1,6 @@
 const std = @import("std");
+const DirectX = @import("../DirectX.zig");
+const dx = DirectX.dx;
 
 const Self = @This();
 
@@ -21,31 +23,47 @@ pub const Options = struct {
     pub const Wrap = enum { clamp_to_edge, repeat };
 };
 
+// DXGI formats
+const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
+const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
+const DXGI_FORMAT_R8_UNORM: u32 = 61;
+
+fn dxgiFormat(format: Options.Format) u32 {
+    return switch (format) {
+        .rgba => DXGI_FORMAT_R8G8B8A8_UNORM,
+        .bgra => DXGI_FORMAT_B8G8R8A8_UNORM,
+        .red => DXGI_FORMAT_R8_UNORM,
+        .red_integer => DXGI_FORMAT_R8_UNORM,
+    };
+}
+
 width: usize,
 height: usize,
-dx_handle: ?*anyopaque = null, // DxTexture*
+dx_handle: ?*anyopaque = null,
 
 pub fn init(opts: Options, width: usize, height: usize, data: ?[]const u8) Error!Self {
-    _ = opts;
-    _ = data;
-    // TODO: call dx_create_texture when device is available
+    const dev = DirectX.current_device;
+    var handle: ?*anyopaque = null;
+
+    if (dev != null and width > 0 and height > 0) {
+        const data_ptr: ?*const anyopaque = if (data) |d| @ptrCast(d.ptr) else null;
+        handle = dx.dx_create_texture(dev, @intCast(width), @intCast(height), dxgiFormat(opts.format), data_ptr);
+    }
+
     return .{
         .width = width,
         .height = height,
+        .dx_handle = handle,
     };
 }
 
 pub fn deinit(self: Self) void {
-    _ = self;
-    // TODO: dx_destroy_texture
+    if (self.dx_handle) |h| dx.dx_destroy_texture(h);
 }
 
 pub fn replaceRegion(self: *Self, offset_x: usize, offset_y: usize, rep_width: usize, rep_height: usize, data: []const u8) !void {
-    _ = self;
-    _ = offset_x;
-    _ = offset_y;
-    _ = rep_width;
-    _ = rep_height;
-    _ = data;
-    // TODO: dx_update_texture_region
+    const dev = DirectX.current_device orelse return;
+    if (self.dx_handle) |h| {
+        dx.dx_update_texture_region(dev, h, @intCast(offset_x), @intCast(offset_y), @intCast(rep_width), @intCast(rep_height), @ptrCast(data.ptr));
+    }
 }

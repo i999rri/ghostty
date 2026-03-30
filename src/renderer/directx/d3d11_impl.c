@@ -43,7 +43,7 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     dev->hwnd = (HWND)hwnd;
 
     DXGI_SWAP_CHAIN_DESC scd = {0};
-    scd.BufferCount = 2;
+    scd.BufferCount = 1;
     scd.BufferDesc.Width = width;
     scd.BufferDesc.Height = height;
     scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -53,7 +53,7 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     scd.OutputWindow = dev->hwnd;
     scd.SampleDesc.Count = 1;
     scd.Windowed = TRUE;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
     D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
     UINT flags = 0;
@@ -67,9 +67,11 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
         &scd, &dev->swap_chain, &dev->device, &dev->feature_level, &dev->context);
 
     if (FAILED(hr)) {
+        OutputDebugStringA("D3D11: CreateDeviceAndSwapChain FAILED\n");
         free(dev);
         return NULL;
     }
+    OutputDebugStringA("D3D11: Device created successfully\n");
 
     dx_create_backbuffer_rtv(dev);
 
