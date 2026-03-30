@@ -1,0 +1,159 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const math = @import("../../math.zig");
+
+const Pipeline = @import("Pipeline.zig");
+
+const log = std.log.scoped(.directx);
+
+// Re-use the same data types as OpenGL - these define the GPU buffer layouts
+// and must match the HLSL constant buffer / structured buffer definitions.
+pub const Uniforms = extern struct {
+    projection_matrix: math.Mat align(16),
+    screen_size: [2]f32 align(8),
+    cell_size: [2]f32 align(8),
+    grid_size: [2]u16 align(4),
+    grid_padding: [4]f32 align(16),
+    padding_extend: PaddingExtend align(4),
+    min_contrast: f32 align(4),
+    cursor_pos: [2]u16 align(4),
+    cursor_color: [4]u8 align(4),
+    bg_color: [4]u8 align(4),
+    bools: Bools align(4),
+
+    const Bools = packed struct(u32) {
+        cursor_wide: bool,
+        use_display_p3: bool,
+        use_linear_blending: bool,
+        use_linear_correction: bool = false,
+        _padding: u28 = 0,
+    };
+
+    const PaddingExtend = packed struct(u32) {
+        left: bool = false,
+        right: bool = false,
+        up: bool = false,
+        down: bool = false,
+        _padding: u28 = 0,
+    };
+};
+
+pub const CellText = extern struct {
+    glyph_pos: [2]u32 align(8) = .{ 0, 0 },
+    glyph_size: [2]u32 align(8) = .{ 0, 0 },
+    bearings: [2]i16 align(4) = .{ 0, 0 },
+    grid_pos: [2]u16 align(4),
+    color: [4]u8 align(4),
+    atlas: Atlas align(1),
+    bools: packed struct(u8) {
+        no_min_contrast: bool = false,
+        is_cursor_glyph: bool = false,
+        _padding: u6 = 0,
+    } align(1) = .{},
+
+    pub const Atlas = enum(u8) {
+        grayscale = 0,
+        color = 1,
+    };
+};
+
+pub const CellBg = [4]u8;
+
+pub const Image = extern struct {
+    grid_pos: [2]f32 align(8),
+    cell_offset: [2]f32 align(8),
+    source_rect: [4]f32 align(16),
+    dest_size: [2]f32 align(8),
+};
+
+pub const BgImage = extern struct {
+    opacity: f32 align(4),
+    info: Info align(1),
+
+    pub const Info = packed struct(u8) {
+        position: Position,
+        fit: Fit,
+        repeat: bool,
+        _padding: u1 = 0,
+
+        pub const Position = enum(u4) {
+            tl = 0,
+            tc = 1,
+            tr = 2,
+            ml = 3,
+            mc = 4,
+            mr = 5,
+            bl = 6,
+            bc = 7,
+            br = 8,
+        };
+
+        pub const Fit = enum(u2) {
+            contain = 0,
+            cover = 1,
+            stretch = 2,
+            none = 3,
+        };
+    };
+};
+
+pub const Shaders = struct {
+    pipelines: PipelineCollection,
+    post_pipelines: []const Pipeline,
+    defunct: bool = false,
+
+    pub const PipelineCollection = struct {
+        bg_color: Pipeline,
+        cell_bg: Pipeline,
+        cell_text: Pipeline,
+        image: Pipeline,
+        bg_image: Pipeline,
+    };
+
+    pub fn init(
+        alloc: Allocator,
+        custom_shaders: []const [:0]const u8,
+    ) !Shaders {
+        _ = alloc;
+        _ = custom_shaders;
+        // TODO: Compile HLSL shaders and create pipelines
+        return .{
+            .pipelines = .{
+                .bg_color = try Pipeline.init(null, .{
+                    .vertex_fn = "bg_color_vs",
+                    .fragment_fn = "bg_color_ps",
+                    .blending_enabled = false,
+                }),
+                .cell_bg = try Pipeline.init(null, .{
+                    .vertex_fn = "cell_bg_vs",
+                    .fragment_fn = "cell_bg_ps",
+                }),
+                .cell_text = try Pipeline.init(CellText, .{
+                    .vertex_fn = "cell_text_vs",
+                    .fragment_fn = "cell_text_ps",
+                    .step_fn = .per_instance,
+                }),
+                .image = try Pipeline.init(Image, .{
+                    .vertex_fn = "image_vs",
+                    .fragment_fn = "image_ps",
+                    .step_fn = .per_instance,
+                }),
+                .bg_image = try Pipeline.init(BgImage, .{
+                    .vertex_fn = "bg_image_vs",
+                    .fragment_fn = "bg_image_ps",
+                    .step_fn = .per_instance,
+                }),
+            },
+            .post_pipelines = &.{},
+        };
+    }
+
+    pub fn deinit(self: *Shaders, alloc: Allocator) void {
+        _ = alloc;
+        self.pipelines.bg_color.deinit();
+        self.pipelines.cell_bg.deinit();
+        self.pipelines.cell_text.deinit();
+        self.pipelines.image.deinit();
+        self.pipelines.bg_image.deinit();
+    }
+};
