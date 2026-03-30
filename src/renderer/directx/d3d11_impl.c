@@ -94,6 +94,7 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
 }
 
 void dx_destroy(DxDevice* dev) {
+    OutputDebugStringA("D3D11: dx_destroy called\n");
     if (!dev) return;
     if (dev->blend_off) ID3D11BlendState_Release(dev->blend_off);
     if (dev->blend_on) ID3D11BlendState_Release(dev->blend_on);

@@ -29,8 +29,18 @@ pub const swap_chain_count = 2;
 
 const log = std.log.scoped(.directx);
 
-/// Thread-local device handle, accessible by Buffer/Texture/etc.
-pub threadlocal var current_device: ?*anyopaque = null;
+fn dbgLog(msg: [*:0]const u8) void {
+    if (comptime builtin.os.tag == .windows) {
+        const k32 = struct {
+            extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
+        };
+        k32.OutputDebugStringA(msg);
+    }
+}
+
+/// Global device handle, accessible by Buffer/Texture/etc.
+/// Set in surfaceInit, used across threads.
+pub var current_device: ?*anyopaque = null;
 
 // C API from d3d11_impl.c
 pub const dx = struct {
@@ -89,13 +99,33 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
 }
 
 pub fn deinit(self: *DirectX) void {
+    dbgLog("DirectX.deinit called\n");
     if (self.device) |dev| dx.dx_destroy(dev);
     self.* = undefined;
 }
 
 pub fn surfaceInit(surface: *apprt.Surface) !void {
-    _ = surface;
-    log.info("DirectX surfaceInit (device created in threadEnter)", .{});
+    // Create D3D11 device here (before initShaders is called).
+    // surfaceInit runs on the surface creation thread, initShaders follows.
+    if (comptime builtin.os.tag != .windows) return;
+    const platform = surface.platform.windows;
+    const hwnd: ?*anyopaque = @ptrCast(platform.hwnd);
+
+    const w32 = struct {
+        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
+    };
+    var rect: w32.RECT = undefined;
+    _ = w32.GetClientRect(hwnd, &rect);
+    const w: u32 = @intCast(rect.right - rect.left);
+    const h: u32 = @intCast(rect.bottom - rect.top);
+
+    const dev = dx.dx_create(hwnd, w, h) orelse {
+        dbgLog("DirectX.surfaceInit: FAILED to create device\n");
+        return error.DirectXFailed;
+    };
+    current_device = dev;
+    dbgLog("DirectX.surfaceInit: device created\n");
 }
 
 pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void {
@@ -104,29 +134,12 @@ pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void 
 }
 
 pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
-    // DirectX is Windows-only
-    if (comptime builtin.os.tag != .windows) return;
-
-    const platform = surface.platform.windows;
-    const hwnd: ?*anyopaque = @ptrCast(platform.hwnd);
-
-    const win32 = struct {
-        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
-        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
-    };
-    var rect: win32.RECT = undefined;
-    _ = win32.GetClientRect(hwnd, &rect);
-    const w: u32 = @intCast(rect.right - rect.left);
-    const h: u32 = @intCast(rect.bottom - rect.top);
-
-    const dev = dx.dx_create(hwnd, w, h) orelse {
-        log.err("failed to create D3D11 device", .{});
-        return error.DirectXFailed;
-    };
+    _ = surface;
+    // Device was created in surfaceInit (which runs before initShaders).
+    // threadEnter runs on the renderer thread - just store the device reference.
     const self_mut: *DirectX = @constCast(self);
-    self_mut.device = dev;
-    current_device = dev;
-    log.info("D3D11 device created ({d}x{d})", .{ w, h });
+    self_mut.device = current_device;
+    dbgLog("DirectX.threadEnter: using device from surfaceInit\n");
 }
 
 pub fn threadExit(self: *const DirectX) void {
@@ -168,8 +181,13 @@ pub fn initShaders(
     alloc: Allocator,
     custom_shaders: []const [:0]const u8,
 ) !shaders.Shaders {
+    // Use threadlocal device (set in surfaceInit on same thread)
+    const dev = current_device orelse self.device;
+    dbgLog(if (dev != null) "DirectX.initShaders: device OK\n" else "DirectX.initShaders: device NULL!\n");
     var s = try shaders.Shaders.init(alloc, custom_shaders);
-    s.compileAll(self.device);
+    if (dev != null) {
+        s.compileAll(dev);
+    }
     return s;
 }
 

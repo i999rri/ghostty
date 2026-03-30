@@ -106,9 +106,9 @@ float unlinearize1(float v) {
     return v <= 0.0031308 ? v * 12.92 : pow(v, 1.0 / 2.4) * 1.055 - 0.055;
 }
 
-float4 load_color(uint4 in_color, bool linear) {
+float4 load_color(uint4 in_color, bool do_linearize) {
     float4 color = float4(in_color) / float4(255.0f, 255.0f, 255.0f, 255.0f);
-    if (linear) color = linearize4(color);
+    if (do_linearize) color = linearize4(color);
     color.rgb *= color.a;
     return color;
 }

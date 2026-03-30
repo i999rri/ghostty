@@ -67,9 +67,11 @@ pub fn begin(device: ?*anyopaque, opts: Options) Self {
 pub fn step(self: *Self, s: Step) void {
     const dev = self.device orelse return;
 
-    // Bind pipeline
+    // Bind pipeline (skip if not compiled yet)
     if (s.pipeline.handle) |pipe| {
         dx.dx_bind_pipeline(dev, pipe);
+    } else {
+        return; // Pipeline not compiled, skip this draw
     }
 
     // Set blend state
