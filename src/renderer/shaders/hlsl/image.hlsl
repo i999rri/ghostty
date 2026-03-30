@@ -1,6 +1,5 @@
 // Image shader - renders embedded images (kitty image protocol, etc.)
 // Pipeline: instanced quad rendering
-#include "common.hlsl"
 
 Texture2D image_tex : register(t0);
 SamplerState image_sampler : register(s0);

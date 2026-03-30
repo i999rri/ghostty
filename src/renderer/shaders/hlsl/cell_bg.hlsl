@@ -1,6 +1,5 @@
 // Cell background shader - renders per-cell background colors.
 // Pipeline: full screen triangle + structured buffer for cell colors
-#include "common.hlsl"
 
 StructuredBuffer<uint> bg_cells : register(t1);
 

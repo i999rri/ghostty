@@ -6,8 +6,15 @@ const Pipeline = @import("Pipeline.zig");
 
 const log = std.log.scoped(.directx);
 
-// Re-use the same data types as OpenGL - these define the GPU buffer layouts
-// and must match the HLSL constant buffer / structured buffer definitions.
+// Embed HLSL source at comptime (with #include resolved)
+const hlsl_common = @embedFile("../shaders/hlsl/common.hlsl");
+const hlsl_bg_color = hlsl_common ++ @embedFile("../shaders/hlsl/bg_color.hlsl");
+const hlsl_cell_bg = hlsl_common ++ @embedFile("../shaders/hlsl/cell_bg.hlsl");
+const hlsl_cell_text = hlsl_common ++ @embedFile("../shaders/hlsl/cell_text.hlsl");
+const hlsl_image = hlsl_common ++ @embedFile("../shaders/hlsl/image.hlsl");
+const hlsl_bg_image = hlsl_common ++ @embedFile("../shaders/hlsl/bg_image.hlsl");
+
+// GPU data types (must match HLSL constant buffer layouts)
 pub const Uniforms = extern struct {
     projection_matrix: math.Mat align(16),
     screen_size: [2]f32 align(8),
@@ -77,22 +84,13 @@ pub const BgImage = extern struct {
         _padding: u1 = 0,
 
         pub const Position = enum(u4) {
-            tl = 0,
-            tc = 1,
-            tr = 2,
-            ml = 3,
-            mc = 4,
-            mr = 5,
-            bl = 6,
-            bc = 7,
-            br = 8,
+            tl = 0, tc = 1, tr = 2,
+            ml = 3, mc = 4, mr = 5,
+            bl = 6, bc = 7, br = 8,
         };
 
         pub const Fit = enum(u2) {
-            contain = 0,
-            cover = 1,
-            stretch = 2,
-            none = 3,
+            contain = 0, cover = 1, stretch = 2, none = 3,
         };
     };
 };
@@ -101,6 +99,7 @@ pub const Shaders = struct {
     pipelines: PipelineCollection,
     post_pipelines: []const Pipeline,
     defunct: bool = false,
+    device: ?*anyopaque = null,
 
     pub const PipelineCollection = struct {
         bg_color: Pipeline,
@@ -116,36 +115,51 @@ pub const Shaders = struct {
     ) !Shaders {
         _ = alloc;
         _ = custom_shaders;
-        // TODO: Compile HLSL shaders and create pipelines
         return .{
             .pipelines = .{
                 .bg_color = try Pipeline.init(null, .{
-                    .vertex_fn = "bg_color_vs",
-                    .fragment_fn = "bg_color_ps",
+                    .vertex_fn = "vs_main",
+                    .fragment_fn = "ps_main",
                     .blending_enabled = false,
                 }),
                 .cell_bg = try Pipeline.init(null, .{
-                    .vertex_fn = "cell_bg_vs",
-                    .fragment_fn = "cell_bg_ps",
+                    .vertex_fn = "vs_main",
+                    .fragment_fn = "ps_main",
                 }),
                 .cell_text = try Pipeline.init(CellText, .{
-                    .vertex_fn = "cell_text_vs",
-                    .fragment_fn = "cell_text_ps",
+                    .vertex_fn = "vs_main",
+                    .fragment_fn = "ps_main",
                     .step_fn = .per_instance,
                 }),
                 .image = try Pipeline.init(Image, .{
-                    .vertex_fn = "image_vs",
-                    .fragment_fn = "image_ps",
+                    .vertex_fn = "vs_main",
+                    .fragment_fn = "ps_main",
                     .step_fn = .per_instance,
                 }),
                 .bg_image = try Pipeline.init(BgImage, .{
-                    .vertex_fn = "bg_image_vs",
-                    .fragment_fn = "bg_image_ps",
+                    .vertex_fn = "vs_main",
+                    .fragment_fn = "ps_main",
                     .step_fn = .per_instance,
                 }),
             },
             .post_pipelines = &.{},
         };
+    }
+
+    /// Compile all HLSL shaders on the D3D11 device.
+    /// Called once when the device is available.
+    pub fn compileAll(self: *Shaders, device: ?*anyopaque) void {
+        self.device = device;
+        self.pipelines.bg_color.createOnDevice(device, hlsl_bg_color, hlsl_bg_color) catch
+            log.err("failed to compile bg_color shader", .{});
+        self.pipelines.cell_bg.createOnDevice(device, hlsl_cell_bg, hlsl_cell_bg) catch
+            log.err("failed to compile cell_bg shader", .{});
+        self.pipelines.cell_text.createOnDevice(device, hlsl_cell_text, hlsl_cell_text) catch
+            log.err("failed to compile cell_text shader", .{});
+        self.pipelines.image.createOnDevice(device, hlsl_image, hlsl_image) catch
+            log.err("failed to compile image shader", .{});
+        self.pipelines.bg_image.createOnDevice(device, hlsl_bg_image, hlsl_bg_image) catch
+            log.err("failed to compile bg_image shader", .{});
     }
 
     pub fn deinit(self: *Shaders, alloc: Allocator) void {
@@ -155,5 +169,6 @@ pub const Shaders = struct {
         self.pipelines.cell_text.deinit();
         self.pipelines.image.deinit();
         self.pipelines.bg_image.deinit();
+        self.defunct = true;
     }
 };

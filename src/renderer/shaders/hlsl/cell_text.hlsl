@@ -1,6 +1,5 @@
 // Cell text shader - renders text glyphs from font atlas.
 // Pipeline: instanced quad rendering with per-instance glyph data
-#include "common.hlsl"
 
 Texture2D atlas_grayscale : register(t0);
 Texture2D atlas_color : register(t1);

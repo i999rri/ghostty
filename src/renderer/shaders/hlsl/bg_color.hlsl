@@ -1,6 +1,5 @@
 // Background color shader - fills the entire screen with the background color.
 // Pipeline: full screen triangle (no vertex input)
-#include "common.hlsl"
 
 struct VSOutput {
     float4 position : SV_Position;

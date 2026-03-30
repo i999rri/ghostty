@@ -1,6 +1,5 @@
 // Background image shader - renders a background image behind the terminal.
 // Pipeline: full screen triangle with image texture
-#include "common.hlsl"
 
 Texture2D image_tex : register(t0);
 SamplerState image_sampler : register(s0);

@@ -161,8 +161,9 @@ pub fn initShaders(
     alloc: Allocator,
     custom_shaders: []const [:0]const u8,
 ) !shaders.Shaders {
-    _ = self;
-    return try shaders.Shaders.init(alloc, custom_shaders);
+    var s = try shaders.Shaders.init(alloc, custom_shaders);
+    s.compileAll(self.device);
+    return s;
 }
 
 pub fn initTarget(self: *const DirectX, width: usize, height: usize) !Target {
