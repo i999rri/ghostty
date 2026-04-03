@@ -53,8 +53,8 @@ void dx_destroy_pipeline(DxPipeline* pipe);
 void dx_bind_pipeline(DxDevice* dev, DxPipeline* pipe);
 
 // Draw
-void dx_draw(DxDevice* dev, uint32_t vertex_count, uint32_t start);
-void dx_draw_instanced(DxDevice* dev, uint32_t vertex_count, uint32_t instance_count, uint32_t start_vertex, uint32_t start_instance);
+void dx_draw(DxDevice* dev, uint32_t vertex_count, uint32_t start, uint32_t topology);
+void dx_draw_instanced(DxDevice* dev, uint32_t vertex_count, uint32_t instance_count, uint32_t start_vertex, uint32_t start_instance, uint32_t topology);
 
 // Render target
 typedef struct DxRenderTarget DxRenderTarget;

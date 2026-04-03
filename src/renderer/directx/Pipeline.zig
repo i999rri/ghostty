@@ -57,12 +57,8 @@ pub fn storeSource(self: *Self, vs_source: []const u8, ps_source: []const u8) vo
 
 /// Get D3D11 pipeline handle. Compiles HLSL + creates shaders on first call (renderer thread).
 pub fn getHandle(self: Self, device: ?*anyopaque) ?*anyopaque {
-    if (self.id == 0 or self.id >= MAX_PIPELINES) {
-        DirectX.dbgLog("Pipeline.getHandle: bad id\n");
-        return null;
-    }
+    if (self.id == 0 or self.id >= MAX_PIPELINES) return null;
     if (handles[self.id]) |h| return h;
-    DirectX.dbgLog("Pipeline.getHandle: compiling on renderer thread\n");
     if (device == null) return null;
 
     const src = &sources[self.id];

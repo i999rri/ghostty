@@ -91,13 +91,17 @@ pub fn step(self: *Self, s: Step) void {
     }
 
     // Draw
+    const topology: u32 = switch (s.draw.type) {
+        .triangle => 4, // D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+        .triangle_strip => 5, // D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP
+    };
     if (s.draw.instance_count > 1) {
         dx.dx_draw_instanced(dev,
             @intCast(s.draw.vertex_count),
             @intCast(s.draw.instance_count),
-            0, 0);
+            0, 0, topology);
     } else {
-        dx.dx_draw(dev, @intCast(s.draw.vertex_count), 0);
+        dx.dx_draw(dev, @intCast(s.draw.vertex_count), 0, topology);
     }
 }
 

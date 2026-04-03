@@ -29,15 +29,6 @@ pub const swap_chain_count = 2;
 
 const log = std.log.scoped(.directx);
 
-pub fn dbgLog(msg: [*:0]const u8) void {
-    if (comptime builtin.os.tag == .windows) {
-        const k32 = struct {
-            extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
-        };
-        k32.OutputDebugStringA(msg);
-    }
-}
-
 /// Global device handle, accessible by Buffer/Texture/etc.
 pub var current_device: ?*anyopaque = null;
 /// HWND stored from surfaceInit for device creation in threadEnter.
@@ -54,8 +45,8 @@ pub const dx = struct {
     pub extern fn dx_bind_backbuffer(?*anyopaque) void;
     pub extern fn dx_set_blend_enabled(?*anyopaque, bool) void;
     pub extern fn dx_get_backbuffer_size(?*anyopaque, *u32, *u32) void;
-    pub extern fn dx_draw(?*anyopaque, u32, u32) void;
-    pub extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32) void;
+    pub extern fn dx_draw(?*anyopaque, u32, u32, u32) void;
+    pub extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32, u32) void;
 
     pub const CompiledShader = extern struct { bytecode: ?*anyopaque, size: u32 };
     pub extern fn dx_compile_shader(?[*]const u8, u32, [*:0]const u8, [*:0]const u8) CompiledShader;
@@ -100,7 +91,6 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
 }
 
 pub fn deinit(self: *DirectX) void {
-    dbgLog("DirectX.deinit called\n");
     if (self.device) |dev| dx.dx_destroy(dev);
     self.* = undefined;
 }
@@ -109,7 +99,6 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
     // Store HWND for device creation in threadEnter (must be on renderer thread).
     if (comptime builtin.os.tag != .windows) return;
     stored_hwnd = @ptrCast(surface.platform.windows.hwnd);
-    dbgLog("DirectX.surfaceInit: HWND stored\n");
 }
 
 pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void {
@@ -132,13 +121,11 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     const h: u32 = @intCast(rect.bottom - rect.top);
 
     const dev = dx.dx_create(hwnd, w, h) orelse {
-        dbgLog("DirectX.threadEnter: FAILED to create device\n");
         return error.DirectXFailed;
     };
     const self_mut: *DirectX = @constCast(self);
     self_mut.device = dev;
     current_device = dev;
-    dbgLog("DirectX.threadEnter: device created on renderer thread\n");
 }
 
 pub fn threadExit(self: *const DirectX) void {
@@ -182,7 +169,6 @@ pub fn initShaders(
     alloc: Allocator,
     custom_shaders: []const [:0]const u8,
 ) !shaders.Shaders {
-    dbgLog("DirectX.initShaders: compiling HLSL bytecode (no device)\n");
     var s = try shaders.Shaders.init(alloc, custom_shaders);
     s.storeSource();
     // Device objects created later in threadEnter via drawFrameStart

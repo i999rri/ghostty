@@ -13,7 +13,6 @@
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 
-#include <stdio.h>
 #include "d3d11_impl.h"
 
 // --- Device ---
@@ -95,7 +94,6 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
 }
 
 void dx_destroy(DxDevice* dev) {
-    OutputDebugStringA("D3D11: dx_destroy called\n");
     if (!dev) return;
     if (dev->blend_off) ID3D11BlendState_Release(dev->blend_off);
     if (dev->blend_on) ID3D11BlendState_Release(dev->blend_on);
@@ -342,21 +340,12 @@ struct DxPipeline {
 DxPipeline* dx_create_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,
                                 const void* ps_bytecode, uint32_t ps_size,
                                 const void* input_desc, uint32_t input_count) {
-    char buf[128];
-    sprintf(buf, "D3D11: dx_create_pipeline vs=%p(%u) ps=%p(%u) dev=%p\n",
-        vs_bytecode, vs_size, ps_bytecode, ps_size, dev);
-    OutputDebugStringA(buf);
     if (!dev) return NULL;
     DxPipeline* pipe = (DxPipeline*)calloc(1, sizeof(DxPipeline));
     if (!pipe) return NULL;
 
-    HRESULT hr1 = ID3D11Device_CreateVertexShader(dev->device, vs_bytecode, vs_size, NULL, &pipe->vs);
-    HRESULT hr2 = ID3D11Device_CreatePixelShader(dev->device, ps_bytecode, ps_size, NULL, &pipe->ps);
-    {
-        char buf[128];
-        sprintf(buf, "D3D11: CreateShaders vs=%p(hr=%lX) ps=%p(hr=%lX)\n", pipe->vs, hr1, pipe->ps, hr2);
-        OutputDebugStringA(buf);
-    }
+    ID3D11Device_CreateVertexShader(dev->device, vs_bytecode, vs_size, NULL, &pipe->vs);
+    ID3D11Device_CreatePixelShader(dev->device, ps_bytecode, ps_size, NULL, &pipe->ps);
 
     if (input_desc && input_count > 0) {
         ID3D11Device_CreateInputLayout(dev->device, (const D3D11_INPUT_ELEMENT_DESC*)input_desc,
@@ -437,23 +426,16 @@ void dx_bind_render_target(DxDevice* dev, DxRenderTarget* rt) {
 
 // --- Draw ---
 
-static int draw_log_count = 0;
-void dx_draw(DxDevice* dev, uint32_t vertex_count, uint32_t start) {
+void dx_draw(DxDevice* dev, uint32_t vertex_count, uint32_t start, uint32_t topology) {
     if (!dev) return;
-    if (draw_log_count < 5) {
-        char buf[64];
-        sprintf(buf, "D3D11: dx_draw count=%u start=%u\n", vertex_count, start);
-        OutputDebugStringA(buf);
-        draw_log_count++;
-    }
-    ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, (D3D11_PRIMITIVE_TOPOLOGY)topology);
     ID3D11DeviceContext_Draw(dev->context, vertex_count, start);
 }
 
 void dx_draw_instanced(DxDevice* dev, uint32_t vertex_count, uint32_t instance_count,
-                        uint32_t start_vertex, uint32_t start_instance) {
+                        uint32_t start_vertex, uint32_t start_instance, uint32_t topology) {
     if (!dev) return;
-    ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, (D3D11_PRIMITIVE_TOPOLOGY)topology);
     ID3D11DeviceContext_DrawInstanced(dev->context, vertex_count, instance_count, start_vertex, start_instance);
 }
 
@@ -462,11 +444,6 @@ void dx_draw_instanced(DxDevice* dev, uint32_t vertex_count, uint32_t instance_c
 DxCompiledShader dx_compile_shader(const char* source, uint32_t source_len,
                                     const char* entry_point, const char* target) {
     DxCompiledShader result = {0};
-    {
-        char buf[128];
-        sprintf(buf, "D3D11: dx_compile_shader entry=%s target=%s len=%u\n", entry_point, target, source_len);
-        OutputDebugStringA(buf);
-    }
     ID3DBlob* blob = NULL;
     ID3DBlob* errors = NULL;
 
