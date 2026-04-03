@@ -56,10 +56,7 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
     D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
-    UINT flags = 0;
-#ifdef _DEBUG
-    flags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
+    UINT flags = D3D11_CREATE_DEVICE_DEBUG;
 
     HRESULT hr = D3D11CreateDeviceAndSwapChain(
         NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags,
