@@ -39,8 +39,9 @@ fn dbgLog(msg: [*:0]const u8) void {
 }
 
 /// Global device handle, accessible by Buffer/Texture/etc.
-/// Set in surfaceInit, used across threads.
 pub var current_device: ?*anyopaque = null;
+/// Global shaders pointer for deferred device object creation.
+pub var pending_shader_init: ?*shaders.Shaders = null;
 
 // C API from d3d11_impl.c
 pub const dx = struct {
@@ -105,8 +106,8 @@ pub fn deinit(self: *DirectX) void {
 }
 
 pub fn surfaceInit(surface: *apprt.Surface) !void {
-    // Create D3D11 device here (before initShaders is called).
-    // surfaceInit runs on the surface creation thread, initShaders follows.
+    // Create D3D11 device here. ID3D11Device is thread-safe for object creation
+    // (CreateVertexShader etc). Only ID3D11DeviceContext is single-threaded.
     if (comptime builtin.os.tag != .windows) return;
     const platform = surface.platform.windows;
     const hwnd: ?*anyopaque = @ptrCast(platform.hwnd);
@@ -135,11 +136,11 @@ pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void 
 
 pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     _ = surface;
-    // Device was created in surfaceInit (which runs before initShaders).
-    // threadEnter runs on the renderer thread - just store the device reference.
+    // Device was created in surfaceInit. Store reference for drawing.
+    // ID3D11DeviceContext calls must happen on this (renderer) thread.
     const self_mut: *DirectX = @constCast(self);
     self_mut.device = current_device;
-    dbgLog("DirectX.threadEnter: using device from surfaceInit\n");
+    dbgLog("DirectX.threadEnter: renderer thread ready\n");
 }
 
 pub fn threadExit(self: *const DirectX) void {
@@ -157,6 +158,8 @@ pub fn drawFrameStart(self: *DirectX) void {
         dx.dx_get_backbuffer_size(dev, &w, &h);
         dx.dx_set_viewport(dev, w, h);
         dx.dx_bind_backbuffer(dev);
+        // Red clear = debug marker (shader should overwrite with bg color)
+        dx.dx_clear(dev, 1.0, 0.0, 0.0, 1.0);
     }
 }
 
@@ -177,17 +180,15 @@ pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
 }
 
 pub fn initShaders(
-    self: *const DirectX,
+    _: *const DirectX,
     alloc: Allocator,
     custom_shaders: []const [:0]const u8,
 ) !shaders.Shaders {
-    // Use threadlocal device (set in surfaceInit on same thread)
-    const dev = current_device orelse self.device;
-    dbgLog(if (dev != null) "DirectX.initShaders: device OK\n" else "DirectX.initShaders: device NULL!\n");
+    const dev = current_device;
+    dbgLog(if (dev != null) "DirectX.initShaders: device OK, compiling\n" else "DirectX.initShaders: no device!\n");
     var s = try shaders.Shaders.init(alloc, custom_shaders);
-    if (dev != null) {
-        s.compileAll(dev);
-    }
+    s.compileBytecode();
+    s.createDeviceObjects(dev);
     return s;
 }
 

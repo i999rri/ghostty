@@ -18,38 +18,56 @@ pub const Options = struct {
     };
 };
 
-// D3D11 pipeline handle (DxPipeline*)
+// D3D11 pipeline handle
 handle: ?*anyopaque = null,
 blending_enabled: bool = true,
 
+// Compiled bytecode (stored until device is available)
+vs_bytecode: ?*anyopaque = null,
+vs_size: u32 = 0,
+ps_bytecode: ?*anyopaque = null,
+ps_size: u32 = 0,
+
 pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
     _ = VertexAttributes;
-    // Pipeline creation is deferred to createOnDevice (needs DxDevice*)
     return .{
         .blending_enabled = opts.blending_enabled,
     };
 }
 
-/// Create the actual D3D11 pipeline objects using the device.
-/// Called lazily when the device is available.
-pub fn createOnDevice(self: *Self, device: ?*anyopaque, vs_source: []const u8, ps_source: []const u8) !void {
-    if (self.handle != null) return; // Already created
-    if (device == null) return;
+/// Compile HLSL source to bytecode. Does NOT need a D3D11 device.
+pub fn compileBytecode(self: *Self, vs_source: []const u8, ps_source: []const u8) void {
+    if (self.vs_bytecode != null) return; // Already compiled
 
-    // Compile vertex shader
     const vs = dx.dx_compile_shader(vs_source.ptr, @intCast(vs_source.len), "vs_main", "vs_5_0");
-    defer dx.dx_free_compiled_shader(vs);
-    if (vs.bytecode == null) return error.DirectXFailed;
+    if (vs.bytecode != null) {
+        self.vs_bytecode = vs.bytecode;
+        self.vs_size = vs.size;
+    }
 
-    // Compile pixel shader
     const ps = dx.dx_compile_shader(ps_source.ptr, @intCast(ps_source.len), "ps_main", "ps_5_0");
-    defer dx.dx_free_compiled_shader(ps);
-    if (ps.bytecode == null) return error.DirectXFailed;
+    if (ps.bytecode != null) {
+        self.ps_bytecode = ps.bytecode;
+        self.ps_size = ps.size;
+    }
+}
 
-    // Create pipeline (input layout created from VS reflection)
-    self.handle = dx.dx_create_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size, null, 0);
+/// Create D3D11 shader objects from bytecode. Needs device.
+pub fn createDeviceObjects(self: *Self, device: ?*anyopaque) void {
+    if (self.handle != null) return; // Already created
+    if (device == null or self.vs_bytecode == null or self.ps_bytecode == null) return;
+
+    self.handle = dx.dx_create_pipeline(device, self.vs_bytecode, self.vs_size, self.ps_bytecode, self.ps_size, null, 0);
+
+    // Free bytecode after creating device objects
+    dx.dx_free_compiled_shader(.{ .bytecode = self.vs_bytecode, .size = self.vs_size });
+    dx.dx_free_compiled_shader(.{ .bytecode = self.ps_bytecode, .size = self.ps_size });
+    self.vs_bytecode = null;
+    self.ps_bytecode = null;
 }
 
 pub fn deinit(self: *const Self) void {
     if (self.handle) |h| dx.dx_destroy_pipeline(h);
+    if (self.vs_bytecode) |b| dx.dx_free_compiled_shader(.{ .bytecode = b, .size = self.vs_size });
+    if (self.ps_bytecode) |b| dx.dx_free_compiled_shader(.{ .bytecode = b, .size = self.ps_size });
 }

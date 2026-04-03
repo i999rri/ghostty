@@ -67,15 +67,10 @@ pub fn begin(device: ?*anyopaque, opts: Options) Self {
 pub fn step(self: *Self, s: Step) void {
     const dev = self.device orelse return;
 
-    // Bind pipeline (skip if not compiled yet)
     if (s.pipeline.handle) |pipe| {
         dx.dx_bind_pipeline(dev, pipe);
     } else {
-        const k32 = struct {
-            extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
-        };
-        k32.OutputDebugStringA("RenderPass.step: pipeline handle is null, skipping\n");
-        return;
+        return; // Pipeline not compiled
     }
 
     // Set blend state

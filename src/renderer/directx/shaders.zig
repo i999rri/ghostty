@@ -148,27 +148,24 @@ pub const Shaders = struct {
 
     /// Compile all HLSL shaders on the D3D11 device.
     /// Called once when the device is available.
-    /// Try to compile shaders. Can be called multiple times - only compiles
-    /// pipelines that don't have a handle yet.
-    pub fn compileAll(self: *Shaders, device: ?*anyopaque) void {
+    /// Step 1: Compile HLSL to bytecode (no device needed).
+    pub fn compileBytecode(self: *Shaders) void {
+        self.pipelines.bg_color.compileBytecode(hlsl_bg_color, hlsl_bg_color);
+        self.pipelines.cell_bg.compileBytecode(hlsl_cell_bg, hlsl_cell_bg);
+        self.pipelines.cell_text.compileBytecode(hlsl_cell_text, hlsl_cell_text);
+        self.pipelines.image.compileBytecode(hlsl_image, hlsl_image);
+        self.pipelines.bg_image.compileBytecode(hlsl_bg_image, hlsl_bg_image);
+    }
+
+    /// Step 2: Create D3D11 shader objects from bytecode (needs device, renderer thread).
+    pub fn createDeviceObjects(self: *Shaders, device: ?*anyopaque) void {
         if (device == null) return;
         self.device = device;
-        log.info("compiling HLSL shaders...", .{});
-        self.pipelines.bg_color.createOnDevice(device, hlsl_bg_color, hlsl_bg_color) catch
-            log.err("failed to compile bg_color shader", .{});
-        log.info("bg_color: handle={?}", .{self.pipelines.bg_color.handle});
-        self.pipelines.cell_bg.createOnDevice(device, hlsl_cell_bg, hlsl_cell_bg) catch
-            log.err("failed to compile cell_bg shader", .{});
-        log.info("cell_bg: handle={?}", .{self.pipelines.cell_bg.handle});
-        self.pipelines.cell_text.createOnDevice(device, hlsl_cell_text, hlsl_cell_text) catch
-            log.err("failed to compile cell_text shader", .{});
-        log.info("cell_text: handle={?}", .{self.pipelines.cell_text.handle});
-        self.pipelines.image.createOnDevice(device, hlsl_image, hlsl_image) catch
-            log.err("failed to compile image shader", .{});
-        log.info("image: handle={?}", .{self.pipelines.image.handle});
-        self.pipelines.bg_image.createOnDevice(device, hlsl_bg_image, hlsl_bg_image) catch
-            log.err("failed to compile bg_image shader", .{});
-        log.info("bg_image: handle={?}", .{self.pipelines.bg_image.handle});
+        self.pipelines.bg_color.createDeviceObjects(device);
+        self.pipelines.cell_bg.createDeviceObjects(device);
+        self.pipelines.cell_text.createDeviceObjects(device);
+        self.pipelines.image.createDeviceObjects(device);
+        self.pipelines.bg_image.createDeviceObjects(device);
     }
 
     pub fn deinit(self: *Shaders, alloc: Allocator) void {
