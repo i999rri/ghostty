@@ -74,22 +74,24 @@ pub fn step(self: *Self, s: Step) void {
     // Determine vertex stride from pipeline layout type
     const vertex_stride: u32 = switch (s.pipeline.layout_type) {
         .cell_text => 32, // sizeof(CellText)
-        .bg_image => 8,   // sizeof(BgImage): f32 + u8 padded to 8
+        .bg_image => 5,   // sizeof(BgImage): f32(4) + u8(1) = 5
         .image => 40,     // sizeof(Image): 2+2+4+2 floats = 40 bytes
         .none => 0,
     };
 
     // Bind buffers
+    const has_vertex_data = (s.pipeline.layout_type != .none);
     for (s.buffers, 0..) |buf_opt, i| {
         if (buf_opt) |buf| {
-            if (i == 0 and s.draw.instance_count > 1 and vertex_stride > 0) {
+            if (i == 0 and has_vertex_data and vertex_stride > 0) {
+                // First buffer is vertex/instance data when pipeline has input layout
                 dx.dx_bind_vertex_buffer(dev, buf, vertex_stride, 0);
             } else {
-                // SRV buffer: for cell_bg slot 1, for cell_text slot 2 (after VB)
-                const srv_slot: u32 = if (s.draw.instance_count > 1)
-                    @intCast(i) // instanced: slot 0 is VB, SRVs start at index
+                // SRV buffer: slot depends on whether first buffer was VB
+                const srv_slot: u32 = if (has_vertex_data)
+                    @intCast(i) // VB at 0, SRVs start at buffer index
                 else
-                    @intCast(i + 1); // non-instanced: SRVs at slot i+1
+                    @intCast(i + 1); // no VB, SRVs at slot i+1
                 dx.dx_bind_srv_buffer(dev, buf, srv_slot, 4);
             }
         }

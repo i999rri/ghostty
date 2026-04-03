@@ -45,6 +45,7 @@ pub const dx = struct {
     pub extern fn dx_bind_backbuffer(?*anyopaque) void;
     pub extern fn dx_set_blend_enabled(?*anyopaque, bool) void;
     pub extern fn dx_clear_shader_resources(?*anyopaque) void;
+    pub extern fn dx_ensure_default_sampler(?*anyopaque) void;
     pub extern fn dx_get_backbuffer_size(?*anyopaque, *u32, *u32) void;
     pub extern fn dx_draw(?*anyopaque, u32, u32, u32) void;
     pub extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32, u32) void;
@@ -148,6 +149,7 @@ pub fn drawFrameStart(self: *DirectX) void {
         dx.dx_set_viewport(dev, w, h);
         dx.dx_bind_backbuffer(dev);
         dx.dx_set_blend_enabled(dev, false);
+        dx.dx_ensure_default_sampler(dev);
         dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
     }
 }
@@ -229,7 +231,8 @@ pub inline fn uniformBufferOptions(self: DirectX) bufferpkg.Options {
 
 pub inline fn fgBufferOptions(self: DirectX) bufferpkg.Options {
     _ = self;
-    return .{ .target = .shader_storage, .usage = .dynamic_draw };
+    // In D3D11, foreground cell data is used as vertex buffer (per-instance)
+    return .{ .target = .array, .usage = .dynamic_draw };
 }
 
 pub inline fn bgBufferOptions(self: DirectX) bufferpkg.Options {

@@ -68,6 +68,7 @@ void dx_set_blend_enabled(DxDevice* dev, bool enabled);
 
 // State management
 void dx_clear_shader_resources(DxDevice* dev);
+void dx_ensure_default_sampler(DxDevice* dev);
 
 // Query
 void dx_get_backbuffer_size(DxDevice* dev, uint32_t* width, uint32_t* height);

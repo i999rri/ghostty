@@ -148,6 +148,21 @@ void dx_clear_shader_resources(DxDevice* dev) {
     ID3D11DeviceContext_PSSetShaderResources(dev->context, 0, 8, nullSRVs);
 }
 
+static ID3D11SamplerState* default_sampler = NULL;
+void dx_ensure_default_sampler(DxDevice* dev) {
+    if (!dev || default_sampler) return;
+    D3D11_SAMPLER_DESC sd = {0};
+    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.MaxLOD = D3D11_FLOAT32_MAX;
+    ID3D11Device_CreateSamplerState(dev->device, &sd, &default_sampler);
+    if (default_sampler) {
+        ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &default_sampler);
+    }
+}
+
 void dx_get_backbuffer_size(DxDevice* dev, uint32_t* width, uint32_t* height) {
     if (!dev) { *width = 0; *height = 0; return; }
     ID3D11Texture2D* back_buffer = NULL;
@@ -181,11 +196,8 @@ DxBuffer* dx_create_buffer(DxDevice* dev, uint32_t bind_flags, uint32_t byte_siz
     bd.Usage = D3D11_USAGE_DYNAMIC;
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-    // Structured buffers need misc flag
-    if (bind_flags & D3D11_BIND_SHADER_RESOURCE) {
-        bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-        bd.StructureByteStride = 4; // Will be set properly by caller
-    }
+    // Shader resource buffers: use typed buffer (not structured)
+    // to avoid BUFFER_STRUCTURED compatibility issues
 
     D3D11_SUBRESOURCE_DATA sd = { .pSysMem = initial_data };
     HRESULT hr = ID3D11Device_CreateBuffer(dev->device, &bd, initial_data ? &sd : NULL, &buf->buffer);
@@ -228,7 +240,7 @@ void dx_bind_srv_buffer(DxDevice* dev, DxBuffer* buf, uint32_t slot, uint32_t el
     // Create SRV if not exists
     if (!buf->srv) {
         D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {0};
-        srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+        srv_desc.Format = DXGI_FORMAT_R32_UINT;
         srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
         srv_desc.Buffer.FirstElement = 0;
         srv_desc.Buffer.NumElements = buf->byte_size / (element_size ? element_size : 4);

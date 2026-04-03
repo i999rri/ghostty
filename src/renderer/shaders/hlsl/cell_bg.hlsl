@@ -1,7 +1,7 @@
 // Cell background shader - renders per-cell background colors.
 // Pipeline: full screen triangle + structured buffer for cell colors
 
-StructuredBuffer<uint> bg_cells : register(t1);
+Buffer<uint> bg_cells : register(t1);
 
 struct VSOutput {
     float4 position : SV_Position;

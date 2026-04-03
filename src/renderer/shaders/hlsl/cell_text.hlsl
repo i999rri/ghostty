@@ -5,7 +5,7 @@ Texture2D atlas_grayscale : register(t0);
 Texture2D atlas_color : register(t1);
 SamplerState atlas_sampler : register(s0);
 
-StructuredBuffer<uint> bg_colors : register(t2);
+Buffer<uint> bg_colors : register(t2);
 
 static const uint ATLAS_GRAYSCALE = 0u;
 static const uint ATLAS_COLOR = 1u;
