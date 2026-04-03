@@ -150,7 +150,7 @@ pub fn drawFrameStart(self: *DirectX) void {
         dx.dx_bind_backbuffer(dev);
         dx.dx_set_blend_enabled(dev, false);
         dx.dx_ensure_default_sampler(dev);
-        dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
+        dx.dx_clear(dev, 0.0, 0.0, 1.0, 1.0); // Blue = debug
     }
 }
 

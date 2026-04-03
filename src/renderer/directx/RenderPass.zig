@@ -69,12 +69,22 @@ pub fn step(self: *Self, s: Step) void {
     // Bind uniform constant buffer at slot 1
     if (s.uniforms) |buf| {
         dx.dx_bind_constant_buffer(dev, buf, 1, true, true);
+    } else {
+        // Log once that uniforms is null
+        const k32 = struct {
+            extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
+            var logged: bool = false;
+        };
+        if (!k32.logged) {
+            k32.OutputDebugStringA("RenderPass: uniforms buffer is NULL\n");
+            k32.logged = true;
+        }
     }
 
     // Determine vertex stride from pipeline layout type
     const vertex_stride: u32 = switch (s.pipeline.layout_type) {
         .cell_text => 32, // sizeof(CellText)
-        .bg_image => 5,   // sizeof(BgImage): f32(4) + u8(1) = 5
+        .bg_image => 8,   // sizeof(BgImage): f32(4) + u8(1) + 3 padding = 8 (4-byte aligned)
         .image => 40,     // sizeof(Image): 2+2+4+2 floats = 40 bytes
         .none => 0,
     };
