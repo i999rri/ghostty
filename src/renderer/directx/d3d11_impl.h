@@ -78,6 +78,10 @@ DxCompiledShader dx_compile_shader(const char* source, uint32_t source_len,
                                     const char* entry_point, const char* target);
 void dx_free_compiled_shader(DxCompiledShader shader);
 
+// Create pipeline with CellText input layout
+DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,
+                                          const void* ps_bytecode, uint32_t ps_size);
+
 #ifdef __cplusplus
 }
 #endif

@@ -473,3 +473,30 @@ DxCompiledShader dx_compile_shader(const char* source, uint32_t source_len,
 void dx_free_compiled_shader(DxCompiledShader shader) {
     free(shader.bytecode);
 }
+
+// Create pipeline with CellText vertex input layout
+// Matches the VSInput struct in cell_text.hlsl and CellText in shaders.zig
+DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,
+                                          const void* ps_bytecode, uint32_t ps_size) {
+    if (!dev) return NULL;
+
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
+        // glyph_pos: uint2, offset 0
+        {"GLYPH_POS",    0, DXGI_FORMAT_R32G32_UINT,    0,  0, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        // glyph_size: uint2, offset 8
+        {"GLYPH_SIZE",   0, DXGI_FORMAT_R32G32_UINT,    0,  8, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        // bearings: int2 (i16x2), offset 16
+        {"BEARINGS",     0, DXGI_FORMAT_R16G16_SINT,    0, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        // grid_pos: uint2 (u16x2), offset 20
+        {"GRID_POS",     0, DXGI_FORMAT_R16G16_UINT,    0, 20, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        // color: uint4 (u8x4), offset 24
+        {"COLOR",        0, DXGI_FORMAT_R8G8B8A8_UINT,  0, 24, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        // atlas: uint (u8), offset 28
+        {"ATLAS",        0, DXGI_FORMAT_R8_UINT,         0, 28, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        // glyph_bools: uint (u8), offset 29
+        {"GLYPH_BOOLS",  0, DXGI_FORMAT_R8_UINT,         0, 29, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+    };
+
+    return dx_create_pipeline(dev, vs_bytecode, vs_size, ps_bytecode, ps_size,
+                              layout, sizeof(layout) / sizeof(layout[0]));
+}

@@ -69,6 +69,7 @@ pub const dx = struct {
     pub extern fn dx_bind_sampler(?*anyopaque, ?*anyopaque, u32) void;
 
     pub extern fn dx_create_pipeline(?*anyopaque, ?*anyopaque, u32, ?*anyopaque, u32, ?*anyopaque, u32) ?*anyopaque;
+    pub extern fn dx_create_cell_text_pipeline(?*anyopaque, ?*anyopaque, u32, ?*anyopaque, u32) ?*anyopaque;
     pub extern fn dx_destroy_pipeline(?*anyopaque) void;
     pub extern fn dx_bind_pipeline(?*anyopaque, ?*anyopaque) void;
 

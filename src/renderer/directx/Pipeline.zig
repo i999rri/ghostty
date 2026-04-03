@@ -21,6 +21,7 @@ pub const Options = struct {
 handle: ?*anyopaque = null,
 blending_enabled: bool = true,
 id: u8 = 0,
+has_cell_text_layout: bool = false,
 
 const MAX_PIPELINES = 16;
 
@@ -36,9 +37,10 @@ var handles: [MAX_PIPELINES]?*anyopaque = [_]?*anyopaque{null} ** MAX_PIPELINES;
 var next_id: u8 = 1;
 
 pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
-    _ = VertexAttributes;
+    const shaders_mod = @import("shaders.zig");
     return .{
         .blending_enabled = opts.blending_enabled,
+        .has_cell_text_layout = (VertexAttributes != null and VertexAttributes.? == shaders_mod.CellText),
     };
 }
 
@@ -72,7 +74,10 @@ pub fn getHandle(self: Self, device: ?*anyopaque) ?*anyopaque {
 
     if (vs.bytecode == null or ps.bytecode == null) return null;
 
-    const h = dx.dx_create_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size, null, 0);
+    const h = if (self.has_cell_text_layout)
+        dx.dx_create_cell_text_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size)
+    else
+        dx.dx_create_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size, null, 0);
     handles[self.id] = h;
     return h;
 }

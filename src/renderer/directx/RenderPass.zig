@@ -70,7 +70,13 @@ pub fn step(self: *Self, s: Step) void {
 
     for (s.buffers, 0..) |buf_opt, i| {
         if (buf_opt) |buf| {
-            dx.dx_bind_srv_buffer(dev, buf, @intCast(i + 1), 4);
+            if (i == 0 and s.draw.instance_count > 1) {
+                // First buffer is vertex/instance data for instanced draws
+                // Stride = size of one instance (CellText = 32 bytes)
+                dx.dx_bind_vertex_buffer(dev, buf, 32, 0);
+            } else {
+                dx.dx_bind_srv_buffer(dev, buf, @intCast(i + 1), 4);
+            }
         }
     }
 
