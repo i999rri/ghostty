@@ -141,6 +141,13 @@ void dx_set_blend_enabled(DxDevice* dev, bool enabled) {
     ID3D11DeviceContext_OMSetBlendState(dev->context, enabled ? dev->blend_on : dev->blend_off, blend_factor, 0xFFFFFFFF);
 }
 
+void dx_clear_shader_resources(DxDevice* dev) {
+    if (!dev) return;
+    ID3D11ShaderResourceView* nullSRVs[8] = {0};
+    ID3D11DeviceContext_VSSetShaderResources(dev->context, 0, 8, nullSRVs);
+    ID3D11DeviceContext_PSSetShaderResources(dev->context, 0, 8, nullSRVs);
+}
+
 void dx_get_backbuffer_size(DxDevice* dev, uint32_t* width, uint32_t* height) {
     if (!dev) { *width = 0; *height = 0; return; }
     ID3D11Texture2D* back_buffer = NULL;
@@ -223,7 +230,8 @@ void dx_bind_srv_buffer(DxDevice* dev, DxBuffer* buf, uint32_t slot, uint32_t el
         D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {0};
         srv_desc.Format = DXGI_FORMAT_UNKNOWN;
         srv_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-        srv_desc.Buffer.ElementWidth = buf->byte_size / (element_size ? element_size : 4);
+        srv_desc.Buffer.FirstElement = 0;
+        srv_desc.Buffer.NumElements = buf->byte_size / (element_size ? element_size : 4);
         ID3D11Device_CreateShaderResourceView(dev->device, (ID3D11Resource*)buf->buffer, &srv_desc, &buf->srv);
     }
     if (buf->srv) {
@@ -469,6 +477,32 @@ DxCompiledShader dx_compile_shader(const char* source, uint32_t source_len,
 
 void dx_free_compiled_shader(DxCompiledShader shader) {
     free(shader.bytecode);
+}
+
+// Create pipeline with BgImage vertex input layout
+DxPipeline* dx_create_bg_image_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,
+                                         const void* ps_bytecode, uint32_t ps_size) {
+    if (!dev) return NULL;
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
+        {"OPACITY", 0, DXGI_FORMAT_R32_FLOAT, 0, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        {"INFO",    0, DXGI_FORMAT_R8_UINT,   0, 4, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+    };
+    return dx_create_pipeline(dev, vs_bytecode, vs_size, ps_bytecode, ps_size,
+                              layout, sizeof(layout) / sizeof(layout[0]));
+}
+
+// Create pipeline with Image vertex input layout
+DxPipeline* dx_create_image_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,
+                                      const void* ps_bytecode, uint32_t ps_size) {
+    if (!dev) return NULL;
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
+        {"GRID_POS",    0, DXGI_FORMAT_R32G32_FLOAT,       0,  0, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        {"CELL_OFFSET", 0, DXGI_FORMAT_R32G32_FLOAT,       0,  8, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        {"SOURCE_RECT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        {"DEST_SIZE",   0, DXGI_FORMAT_R32G32_FLOAT,       0, 32, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+    };
+    return dx_create_pipeline(dev, vs_bytecode, vs_size, ps_bytecode, ps_size,
+                              layout, sizeof(layout) / sizeof(layout[0]));
 }
 
 // Create pipeline with CellText vertex input layout

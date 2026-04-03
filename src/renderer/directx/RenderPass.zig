@@ -63,23 +63,39 @@ pub fn step(self: *Self, s: Step) void {
     dx.dx_set_blend_enabled(dev, s.pipeline.blending_enabled);
     dx.dx_bind_pipeline(dev, pipe);
 
-    // Bind resources
+    // Clear previous SRV bindings (prevent slot conflicts between steps)
+    dx.dx_clear_shader_resources(dev);
+
+    // Bind uniform constant buffer at slot 1
     if (s.uniforms) |buf| {
         dx.dx_bind_constant_buffer(dev, buf, 1, true, true);
     }
 
+    // Determine vertex stride from pipeline layout type
+    const vertex_stride: u32 = switch (s.pipeline.layout_type) {
+        .cell_text => 32, // sizeof(CellText)
+        .bg_image => 8,   // sizeof(BgImage): f32 + u8 padded to 8
+        .image => 40,     // sizeof(Image): 2+2+4+2 floats = 40 bytes
+        .none => 0,
+    };
+
+    // Bind buffers
     for (s.buffers, 0..) |buf_opt, i| {
         if (buf_opt) |buf| {
-            if (i == 0 and s.draw.instance_count > 1) {
-                // First buffer is vertex/instance data for instanced draws
-                // Stride = size of one instance (CellText = 32 bytes)
-                dx.dx_bind_vertex_buffer(dev, buf, 32, 0);
+            if (i == 0 and s.draw.instance_count > 1 and vertex_stride > 0) {
+                dx.dx_bind_vertex_buffer(dev, buf, vertex_stride, 0);
             } else {
-                dx.dx_bind_srv_buffer(dev, buf, @intCast(i + 1), 4);
+                // SRV buffer: for cell_bg slot 1, for cell_text slot 2 (after VB)
+                const srv_slot: u32 = if (s.draw.instance_count > 1)
+                    @intCast(i) // instanced: slot 0 is VB, SRVs start at index
+                else
+                    @intCast(i + 1); // non-instanced: SRVs at slot i+1
+                dx.dx_bind_srv_buffer(dev, buf, srv_slot, 4);
             }
         }
     }
 
+    // Bind textures
     for (s.textures, 0..) |tex_opt, i| {
         if (tex_opt) |tex| {
             if (tex.dx_handle) |handle| {
@@ -88,6 +104,7 @@ pub fn step(self: *Self, s: Step) void {
         }
     }
 
+    // Bind samplers
     for (s.samplers, 0..) |samp_opt, i| {
         if (samp_opt) |samp| {
             if (samp.dx_handle) |handle| {

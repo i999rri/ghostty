@@ -44,6 +44,7 @@ pub const dx = struct {
     pub extern fn dx_set_viewport(?*anyopaque, u32, u32) void;
     pub extern fn dx_bind_backbuffer(?*anyopaque) void;
     pub extern fn dx_set_blend_enabled(?*anyopaque, bool) void;
+    pub extern fn dx_clear_shader_resources(?*anyopaque) void;
     pub extern fn dx_get_backbuffer_size(?*anyopaque, *u32, *u32) void;
     pub extern fn dx_draw(?*anyopaque, u32, u32, u32) void;
     pub extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32, u32) void;
@@ -70,6 +71,8 @@ pub const dx = struct {
 
     pub extern fn dx_create_pipeline(?*anyopaque, ?*anyopaque, u32, ?*anyopaque, u32, ?*anyopaque, u32) ?*anyopaque;
     pub extern fn dx_create_cell_text_pipeline(?*anyopaque, ?*anyopaque, u32, ?*anyopaque, u32) ?*anyopaque;
+    pub extern fn dx_create_bg_image_pipeline(?*anyopaque, ?*anyopaque, u32, ?*anyopaque, u32) ?*anyopaque;
+    pub extern fn dx_create_image_pipeline(?*anyopaque, ?*anyopaque, u32, ?*anyopaque, u32) ?*anyopaque;
     pub extern fn dx_destroy_pipeline(?*anyopaque) void;
     pub extern fn dx_bind_pipeline(?*anyopaque, ?*anyopaque) void;
 

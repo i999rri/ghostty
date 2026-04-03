@@ -21,7 +21,9 @@ pub const Options = struct {
 handle: ?*anyopaque = null,
 blending_enabled: bool = true,
 id: u8 = 0,
-has_cell_text_layout: bool = false,
+layout_type: LayoutType = .none,
+
+const LayoutType = enum { none, cell_text, bg_image, image };
 
 const MAX_PIPELINES = 16;
 
@@ -38,9 +40,15 @@ var next_id: u8 = 1;
 
 pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
     const shaders_mod = @import("shaders.zig");
+    const lt: LayoutType = if (VertexAttributes) |VA| blk: {
+        if (VA == shaders_mod.CellText) break :blk .cell_text;
+        if (VA == shaders_mod.BgImage) break :blk .bg_image;
+        if (VA == shaders_mod.Image) break :blk .image;
+        break :blk .none;
+    } else .none;
     return .{
         .blending_enabled = opts.blending_enabled,
-        .has_cell_text_layout = (VertexAttributes != null and VertexAttributes.? == shaders_mod.CellText),
+        .layout_type = lt,
     };
 }
 
@@ -74,10 +82,12 @@ pub fn getHandle(self: Self, device: ?*anyopaque) ?*anyopaque {
 
     if (vs.bytecode == null or ps.bytecode == null) return null;
 
-    const h = if (self.has_cell_text_layout)
-        dx.dx_create_cell_text_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size)
-    else
-        dx.dx_create_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size, null, 0);
+    const h = switch (self.layout_type) {
+        .cell_text => dx.dx_create_cell_text_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size),
+        .bg_image => dx.dx_create_bg_image_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size),
+        .image => dx.dx_create_image_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size),
+        .none => dx.dx_create_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size, null, 0),
+    };
     handles[self.id] = h;
     return h;
 }
