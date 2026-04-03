@@ -149,12 +149,12 @@ pub const Shaders = struct {
     /// Compile all HLSL shaders on the D3D11 device.
     /// Called once when the device is available.
     /// Step 1: Compile HLSL to bytecode (no device needed).
-    pub fn compileBytecode(self: *Shaders) void {
-        self.pipelines.bg_color.compileBytecode(hlsl_bg_color, hlsl_bg_color);
-        self.pipelines.cell_bg.compileBytecode(hlsl_cell_bg, hlsl_cell_bg);
-        self.pipelines.cell_text.compileBytecode(hlsl_cell_text, hlsl_cell_text);
-        self.pipelines.image.compileBytecode(hlsl_image, hlsl_image);
-        self.pipelines.bg_image.compileBytecode(hlsl_bg_image, hlsl_bg_image);
+    pub fn storeSource(self: *Shaders) void {
+        self.pipelines.bg_color.storeSource(hlsl_bg_color, hlsl_bg_color);
+        self.pipelines.cell_bg.storeSource(hlsl_cell_bg, hlsl_cell_bg);
+        self.pipelines.cell_text.storeSource(hlsl_cell_text, hlsl_cell_text);
+        self.pipelines.image.storeSource(hlsl_image, hlsl_image);
+        self.pipelines.bg_image.storeSource(hlsl_bg_image, hlsl_bg_image);
     }
 
     /// Step 2: Create D3D11 shader objects from bytecode (needs device, renderer thread).

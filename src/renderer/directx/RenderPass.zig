@@ -44,56 +44,36 @@ pub const Step = struct {
 device: ?*anyopaque,
 
 pub fn begin(device: ?*anyopaque, opts: Options) Self {
-    const dev = device orelse return .{ .device = null };
-
-    // Clear attachments if requested
-    for (opts.attachments) |att| {
-        if (att.clear_color) |color| {
-            switch (att.target) {
-                .target => |t| {
-                    if (t.rt_handle) |rt| {
-                        dx.dx_bind_render_target(dev, rt);
-                        dx.dx_clear(dev, color[0], color[1], color[2], color[3]);
-                    }
-                },
-                .texture => {},
-            }
-        }
-    }
-
-    return .{ .device = dev };
+    _ = opts;
+    return .{ .device = device };
 }
 
 pub fn step(self: *Self, s: Step) void {
     const dev = self.device orelse return;
 
-    // Resolve pipeline handle (may need lazy creation from bytecode cache)
-    var pipeline = s.pipeline;
-    if (pipeline.handle == null) {
-        pipeline.createDeviceObjects(dev);
-    }
-    if (pipeline.handle) |pipe| {
-        dx.dx_bind_pipeline(dev, pipe);
-    } else {
-        return;
-    }
+    // Get pipeline handle (lazy creation on renderer thread)
+    const pipe = s.pipeline.getHandle(dev) orelse return;
 
-    // Set blend state
+    // Set full D3D11 state
+    var w: u32 = 0;
+    var h: u32 = 0;
+    dx.dx_get_backbuffer_size(dev, &w, &h);
+    dx.dx_set_viewport(dev, w, h);
+    dx.dx_bind_backbuffer(dev);
     dx.dx_set_blend_enabled(dev, s.pipeline.blending_enabled);
+    dx.dx_bind_pipeline(dev, pipe);
 
-    // Bind uniform constant buffer (slot 1 to match HLSL register(b1))
+    // Bind resources
     if (s.uniforms) |buf| {
         dx.dx_bind_constant_buffer(dev, buf, 1, true, true);
     }
 
-    // Bind structured buffers / vertex buffers
     for (s.buffers, 0..) |buf_opt, i| {
         if (buf_opt) |buf| {
             dx.dx_bind_srv_buffer(dev, buf, @intCast(i + 1), 4);
         }
     }
 
-    // Bind textures
     for (s.textures, 0..) |tex_opt, i| {
         if (tex_opt) |tex| {
             if (tex.dx_handle) |handle| {
@@ -102,7 +82,6 @@ pub fn step(self: *Self, s: Step) void {
         }
     }
 
-    // Bind samplers
     for (s.samplers, 0..) |samp_opt, i| {
         if (samp_opt) |samp| {
             if (samp.dx_handle) |handle| {

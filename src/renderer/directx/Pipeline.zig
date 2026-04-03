@@ -18,22 +18,22 @@ pub const Options = struct {
     };
 };
 
-// D3D11 pipeline handle
 handle: ?*anyopaque = null,
 blending_enabled: bool = true,
+id: u8 = 0,
 
-// Compiled bytecode (stored until device is available)
-vs_bytecode: ?*anyopaque = null,
-vs_size: u32 = 0,
-ps_bytecode: ?*anyopaque = null,
-ps_size: u32 = 0,
+const MAX_PIPELINES = 16;
 
-// Cache index for lazy device object creation
-cache_id: u8 = 0,
+const SourceEntry = struct {
+    vs: ?[*]const u8 = null,
+    vs_len: u32 = 0,
+    ps: ?[*]const u8 = null,
+    ps_len: u32 = 0,
+};
 
-// Global pipeline cache (persists across value copies)
-var pipeline_cache: [16]?*anyopaque = .{null} ** 16;
-var next_cache_id: u8 = 1;
+var sources: [MAX_PIPELINES]SourceEntry = [_]SourceEntry{.{}} ** MAX_PIPELINES;
+var handles: [MAX_PIPELINES]?*anyopaque = [_]?*anyopaque{null} ** MAX_PIPELINES;
+var next_id: u8 = 1;
 
 pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
     _ = VertexAttributes;
@@ -42,56 +42,45 @@ pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
     };
 }
 
-/// Compile HLSL source to bytecode. Does NOT need a D3D11 device.
-pub fn compileBytecode(self: *Self, vs_source: []const u8, ps_source: []const u8) void {
-    if (self.vs_bytecode != null) return;
-
-    // Assign cache ID for lazy device object lookup
-    self.cache_id = next_cache_id;
-    next_cache_id += 1;
-
-    const vs = dx.dx_compile_shader(vs_source.ptr, @intCast(vs_source.len), "vs_main", "vs_5_0");
-    if (vs.bytecode != null) {
-        self.vs_bytecode = vs.bytecode;
-        self.vs_size = vs.size;
-    }
-
-    const ps = dx.dx_compile_shader(ps_source.ptr, @intCast(ps_source.len), "ps_main", "ps_5_0");
-    if (ps.bytecode != null) {
-        self.ps_bytecode = ps.bytecode;
-        self.ps_size = ps.size;
-    }
+/// Store HLSL source pointers (comptime data, always valid). No compilation yet.
+pub fn storeSource(self: *Self, vs_source: []const u8, ps_source: []const u8) void {
+    const id = next_id;
+    next_id += 1;
+    self.id = id;
+    sources[id] = .{
+        .vs = vs_source.ptr,
+        .vs_len = @intCast(vs_source.len),
+        .ps = ps_source.ptr,
+        .ps_len = @intCast(ps_source.len),
+    };
 }
 
-/// Create D3D11 shader objects from bytecode. Needs device.
-/// Uses global cache so value copies share the same handle.
-pub fn createDeviceObjects(self: *Self, device: ?*anyopaque) void {
-    // Check cache first (handles value copies sharing same pipeline)
-    if (self.cache_id > 0 and self.cache_id < pipeline_cache.len) {
-        if (pipeline_cache[self.cache_id]) |cached| {
-            self.handle = cached;
-            return;
-        }
+/// Get D3D11 pipeline handle. Compiles HLSL + creates shaders on first call (renderer thread).
+pub fn getHandle(self: Self, device: ?*anyopaque) ?*anyopaque {
+    if (self.id == 0 or self.id >= MAX_PIPELINES) {
+        DirectX.dbgLog("Pipeline.getHandle: bad id\n");
+        return null;
     }
+    if (handles[self.id]) |h| return h;
+    DirectX.dbgLog("Pipeline.getHandle: compiling on renderer thread\n");
+    if (device == null) return null;
 
-    if (device == null or self.vs_bytecode == null or self.ps_bytecode == null) return;
+    const src = &sources[self.id];
+    if (src.vs == null or src.ps == null) return null;
 
-    self.handle = dx.dx_create_pipeline(device, self.vs_bytecode, self.vs_size, self.ps_bytecode, self.ps_size, null, 0);
+    // Compile + create entirely on renderer thread
+    const vs = dx.dx_compile_shader(src.vs, src.vs_len, "vs_main", "vs_5_0");
+    const ps = dx.dx_compile_shader(src.ps, src.ps_len, "ps_main", "ps_5_0");
+    defer dx.dx_free_compiled_shader(vs);
+    defer dx.dx_free_compiled_shader(ps);
 
-    // Store in cache
-    if (self.cache_id > 0 and self.cache_id < pipeline_cache.len) {
-        pipeline_cache[self.cache_id] = self.handle;
-    }
+    if (vs.bytecode == null or ps.bytecode == null) return null;
 
-    // Free bytecode
-    dx.dx_free_compiled_shader(.{ .bytecode = self.vs_bytecode, .size = self.vs_size });
-    dx.dx_free_compiled_shader(.{ .bytecode = self.ps_bytecode, .size = self.ps_size });
-    self.vs_bytecode = null;
-    self.ps_bytecode = null;
+    const h = dx.dx_create_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size, null, 0);
+    handles[self.id] = h;
+    return h;
 }
 
 pub fn deinit(self: *const Self) void {
-    if (self.handle) |h| dx.dx_destroy_pipeline(h);
-    if (self.vs_bytecode) |b| dx.dx_free_compiled_shader(.{ .bytecode = b, .size = self.vs_size });
-    if (self.ps_bytecode) |b| dx.dx_free_compiled_shader(.{ .bytecode = b, .size = self.ps_size });
+    _ = self;
 }

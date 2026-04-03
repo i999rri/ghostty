@@ -29,7 +29,7 @@ pub const swap_chain_count = 2;
 
 const log = std.log.scoped(.directx);
 
-fn dbgLog(msg: [*:0]const u8) void {
+pub fn dbgLog(msg: [*:0]const u8) void {
     if (comptime builtin.os.tag == .windows) {
         const k32 = struct {
             extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
@@ -149,8 +149,6 @@ pub fn displayRealized(self: *const DirectX) void {
     _ = self;
 }
 
-var test_pipeline_handle: ?*anyopaque = null;
-
 pub fn drawFrameStart(self: *DirectX) void {
     if (self.device) |dev| {
         var w: u32 = 0;
@@ -158,25 +156,8 @@ pub fn drawFrameStart(self: *DirectX) void {
         dx.dx_get_backbuffer_size(dev, &w, &h);
         dx.dx_set_viewport(dev, w, h);
         dx.dx_bind_backbuffer(dev);
-        dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
         dx.dx_set_blend_enabled(dev, false);
-
-        // Direct test: compile and draw a green triangle
-        if (test_pipeline_handle == null) {
-            const src = @embedFile("shaders/hlsl/common.hlsl") ++ @embedFile("shaders/hlsl/bg_color.hlsl");
-            const vs = dx.dx_compile_shader(src.ptr, src.len, "vs_main", "vs_5_0");
-            const ps = dx.dx_compile_shader(src.ptr, src.len, "ps_main", "ps_5_0");
-            if (vs.bytecode != null and ps.bytecode != null) {
-                test_pipeline_handle = dx.dx_create_pipeline(dev, vs.bytecode, vs.size, ps.bytecode, ps.size, null, 0);
-                dx.dx_free_compiled_shader(vs);
-                dx.dx_free_compiled_shader(ps);
-                dbgLog("DirectX: test pipeline created\n");
-            }
-        }
-        if (test_pipeline_handle) |pipe| {
-            dx.dx_bind_pipeline(dev, pipe);
-            dx.dx_draw(dev, 3, 0);
-        }
+        dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
     }
 }
 
@@ -203,7 +184,7 @@ pub fn initShaders(
 ) !shaders.Shaders {
     dbgLog("DirectX.initShaders: compiling HLSL bytecode (no device)\n");
     var s = try shaders.Shaders.init(alloc, custom_shaders);
-    s.compileBytecode();
+    s.storeSource();
     // Device objects created later in threadEnter via drawFrameStart
     return s;
 }
