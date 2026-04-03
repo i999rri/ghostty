@@ -67,10 +67,15 @@ pub fn begin(device: ?*anyopaque, opts: Options) Self {
 pub fn step(self: *Self, s: Step) void {
     const dev = self.device orelse return;
 
-    if (s.pipeline.handle) |pipe| {
+    // Resolve pipeline handle (may need lazy creation from bytecode cache)
+    var pipeline = s.pipeline;
+    if (pipeline.handle == null) {
+        pipeline.createDeviceObjects(dev);
+    }
+    if (pipeline.handle) |pipe| {
         dx.dx_bind_pipeline(dev, pipe);
     } else {
-        return; // Pipeline not compiled
+        return;
     }
 
     // Set blend state

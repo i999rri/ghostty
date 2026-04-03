@@ -15,6 +15,8 @@ VSOutput vs_main(uint vid : SV_VertexID) {
 }
 
 float4 ps_main(VSOutput input) : SV_Target {
-    bool use_linear_blending = (bools & USE_LINEAR_BLENDING) != 0;
-    return load_color(unpack4u8(bg_color_packed_4u8), use_linear_blending);
+    // TEST: fixed green color to verify shader draws
+    return float4(0.0, 1.0, 0.0, 1.0);
+    //bool use_linear_blending = (bools & USE_LINEAR_BLENDING) != 0;
+    //return load_color(unpack4u8(bg_color_packed_4u8), use_linear_blending);
 }

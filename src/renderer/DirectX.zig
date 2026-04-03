@@ -40,8 +40,8 @@ fn dbgLog(msg: [*:0]const u8) void {
 
 /// Global device handle, accessible by Buffer/Texture/etc.
 pub var current_device: ?*anyopaque = null;
-/// Global shaders pointer for deferred device object creation.
-pub var pending_shader_init: ?*shaders.Shaders = null;
+/// HWND stored from surfaceInit for device creation in threadEnter.
+var stored_hwnd: ?*anyopaque = null;
 
 // C API from d3d11_impl.c
 pub const dx = struct {
@@ -106,12 +106,22 @@ pub fn deinit(self: *DirectX) void {
 }
 
 pub fn surfaceInit(surface: *apprt.Surface) !void {
-    // Create D3D11 device here. ID3D11Device is thread-safe for object creation
-    // (CreateVertexShader etc). Only ID3D11DeviceContext is single-threaded.
+    // Store HWND for device creation in threadEnter (must be on renderer thread).
     if (comptime builtin.os.tag != .windows) return;
-    const platform = surface.platform.windows;
-    const hwnd: ?*anyopaque = @ptrCast(platform.hwnd);
+    stored_hwnd = @ptrCast(surface.platform.windows.hwnd);
+    dbgLog("DirectX.surfaceInit: HWND stored\n");
+}
 
+pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void {
+    _ = self;
+    _ = surface;
+}
+
+pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
+    _ = surface;
+    // Create D3D11 device on renderer thread. The immediate context
+    // must only be used from this thread.
+    const hwnd = stored_hwnd orelse return;
     const w32 = struct {
         const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
         extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
@@ -122,25 +132,13 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
     const h: u32 = @intCast(rect.bottom - rect.top);
 
     const dev = dx.dx_create(hwnd, w, h) orelse {
-        dbgLog("DirectX.surfaceInit: FAILED to create device\n");
+        dbgLog("DirectX.threadEnter: FAILED to create device\n");
         return error.DirectXFailed;
     };
-    current_device = dev;
-    dbgLog("DirectX.surfaceInit: device created\n");
-}
-
-pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void {
-    _ = self;
-    _ = surface;
-}
-
-pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
-    _ = surface;
-    // Device was created in surfaceInit. Store reference for drawing.
-    // ID3D11DeviceContext calls must happen on this (renderer) thread.
     const self_mut: *DirectX = @constCast(self);
-    self_mut.device = current_device;
-    dbgLog("DirectX.threadEnter: renderer thread ready\n");
+    self_mut.device = dev;
+    current_device = dev;
+    dbgLog("DirectX.threadEnter: device created on renderer thread\n");
 }
 
 pub fn threadExit(self: *const DirectX) void {
@@ -151,6 +149,8 @@ pub fn displayRealized(self: *const DirectX) void {
     _ = self;
 }
 
+var test_pipeline_handle: ?*anyopaque = null;
+
 pub fn drawFrameStart(self: *DirectX) void {
     if (self.device) |dev| {
         var w: u32 = 0;
@@ -158,8 +158,25 @@ pub fn drawFrameStart(self: *DirectX) void {
         dx.dx_get_backbuffer_size(dev, &w, &h);
         dx.dx_set_viewport(dev, w, h);
         dx.dx_bind_backbuffer(dev);
-        // Red clear = debug marker (shader should overwrite with bg color)
-        dx.dx_clear(dev, 1.0, 0.0, 0.0, 1.0);
+        dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
+        dx.dx_set_blend_enabled(dev, false);
+
+        // Direct test: compile and draw a green triangle
+        if (test_pipeline_handle == null) {
+            const src = @embedFile("shaders/hlsl/common.hlsl") ++ @embedFile("shaders/hlsl/bg_color.hlsl");
+            const vs = dx.dx_compile_shader(src.ptr, src.len, "vs_main", "vs_5_0");
+            const ps = dx.dx_compile_shader(src.ptr, src.len, "ps_main", "ps_5_0");
+            if (vs.bytecode != null and ps.bytecode != null) {
+                test_pipeline_handle = dx.dx_create_pipeline(dev, vs.bytecode, vs.size, ps.bytecode, ps.size, null, 0);
+                dx.dx_free_compiled_shader(vs);
+                dx.dx_free_compiled_shader(ps);
+                dbgLog("DirectX: test pipeline created\n");
+            }
+        }
+        if (test_pipeline_handle) |pipe| {
+            dx.dx_bind_pipeline(dev, pipe);
+            dx.dx_draw(dev, 3, 0);
+        }
     }
 }
 
@@ -184,11 +201,10 @@ pub fn initShaders(
     alloc: Allocator,
     custom_shaders: []const [:0]const u8,
 ) !shaders.Shaders {
-    const dev = current_device;
-    dbgLog(if (dev != null) "DirectX.initShaders: device OK, compiling\n" else "DirectX.initShaders: no device!\n");
+    dbgLog("DirectX.initShaders: compiling HLSL bytecode (no device)\n");
     var s = try shaders.Shaders.init(alloc, custom_shaders);
     s.compileBytecode();
-    s.createDeviceObjects(dev);
+    // Device objects created later in threadEnter via drawFrameStart
     return s;
 }
 

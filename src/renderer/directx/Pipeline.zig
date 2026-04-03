@@ -28,6 +28,13 @@ vs_size: u32 = 0,
 ps_bytecode: ?*anyopaque = null,
 ps_size: u32 = 0,
 
+// Cache index for lazy device object creation
+cache_id: u8 = 0,
+
+// Global pipeline cache (persists across value copies)
+var pipeline_cache: [16]?*anyopaque = .{null} ** 16;
+var next_cache_id: u8 = 1;
+
 pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
     _ = VertexAttributes;
     return .{
@@ -37,7 +44,11 @@ pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
 
 /// Compile HLSL source to bytecode. Does NOT need a D3D11 device.
 pub fn compileBytecode(self: *Self, vs_source: []const u8, ps_source: []const u8) void {
-    if (self.vs_bytecode != null) return; // Already compiled
+    if (self.vs_bytecode != null) return;
+
+    // Assign cache ID for lazy device object lookup
+    self.cache_id = next_cache_id;
+    next_cache_id += 1;
 
     const vs = dx.dx_compile_shader(vs_source.ptr, @intCast(vs_source.len), "vs_main", "vs_5_0");
     if (vs.bytecode != null) {
@@ -53,13 +64,26 @@ pub fn compileBytecode(self: *Self, vs_source: []const u8, ps_source: []const u8
 }
 
 /// Create D3D11 shader objects from bytecode. Needs device.
+/// Uses global cache so value copies share the same handle.
 pub fn createDeviceObjects(self: *Self, device: ?*anyopaque) void {
-    if (self.handle != null) return; // Already created
+    // Check cache first (handles value copies sharing same pipeline)
+    if (self.cache_id > 0 and self.cache_id < pipeline_cache.len) {
+        if (pipeline_cache[self.cache_id]) |cached| {
+            self.handle = cached;
+            return;
+        }
+    }
+
     if (device == null or self.vs_bytecode == null or self.ps_bytecode == null) return;
 
     self.handle = dx.dx_create_pipeline(device, self.vs_bytecode, self.vs_size, self.ps_bytecode, self.ps_size, null, 0);
 
-    // Free bytecode after creating device objects
+    // Store in cache
+    if (self.cache_id > 0 and self.cache_id < pipeline_cache.len) {
+        pipeline_cache[self.cache_id] = self.handle;
+    }
+
+    // Free bytecode
     dx.dx_free_compiled_shader(.{ .bytecode = self.vs_bytecode, .size = self.vs_size });
     dx.dx_free_compiled_shader(.{ .bytecode = self.ps_bytecode, .size = self.ps_size });
     self.vs_bytecode = null;
