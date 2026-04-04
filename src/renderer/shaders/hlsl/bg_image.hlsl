@@ -94,35 +94,29 @@ PSInput vs_main(VSInput input) {
 }
 
 float4 ps_main(PSInput input) : SV_Target {
-    // Background image: stretch to fill with opacity
-    // TODO: implement proper cover/contain/position modes
-    float4 img = image_tex.Sample(image_sampler, input.position.xy / screen_size);
-    return float4(img.rgb * 0.3, 1.0);
-    bool use_linear_blending = (bools & USE_LINEAR_BLENDING) != 0;
+    // Get texture dimensions
+    uint tex_w, tex_h;
+    image_tex.GetDimensions(tex_w, tex_h);
+    float2 tex_size = float2(tex_w, tex_h);
+    // Fallback if GetDimensions fails
+    if (tex_w == 0 || tex_h == 0) tex_size = screen_size;
+    float op = input.opacity;
 
-    float2 tex_coord = (input.position.xy - input.offset) * input.scale;
+    uint4 bg_u = unpack4u8(bg_color_packed_4u8);
+    float3 bg = float3(bg_u.rgb) / 255.0;
+    float bg_a = (float)bg_u.a / 255.0;
 
-    float2 tex_size;
-    image_tex.GetDimensions(tex_size.x, tex_size.y);
+    // Cover: scale to fill, center
+    float s = max(screen_size.x / tex_size.x, screen_size.y / tex_size.y);
+    float2 scaled = tex_size * s;
+    float2 ofs = (screen_size - scaled) * 0.5;
+    float2 uv = (input.position.xy - ofs) / scaled;
 
-    if (input.repeat_flag != 0) {
-        tex_coord = fmod(fmod(tex_coord, tex_size) + tex_size, tex_size);
+    float4 img = float4(0, 0, 0, 0);
+    if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
+        img = image_tex.Sample(image_sampler, uv);
     }
 
-    float4 rgba;
-    if (any(tex_coord < float2(0, 0)) || any(tex_coord > tex_size)) {
-        rgba = float4(0, 0, 0, 0);
-    } else {
-        rgba = image_tex.Sample(image_sampler, tex_coord / tex_size);
-        if (!use_linear_blending) {
-            rgba = unlinearize4(rgba);
-        }
-        rgba.rgb *= rgba.a;
-    }
-
-    rgba *= min(input.opacity, 1.0 / input.bg_color.a);
-    rgba += max(float4(0, 0, 0, 0), float4(input.bg_color.rgb, 1.0) * float4(1.0 - rgba.a, 1.0 - rgba.a, 1.0 - rgba.a, 1.0 - rgba.a));
-    rgba *= input.bg_color.a;
-
-    return rgba;
+    float3 blended = lerp(bg, img.rgb, img.a * op);
+    return float4(blended * bg_a, bg_a);
 }
