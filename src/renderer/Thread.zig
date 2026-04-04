@@ -242,7 +242,10 @@ fn threadMain_(self: *Thread) !void {
         break :blk @hasDecl(RendererType, "API") and @hasDecl(RendererType.API, "native_render_loop") and RendererType.API.native_render_loop;
     };
 
-    if (!use_native_loop) {
+    if (use_native_loop) {
+        const RendererType = rendererpkg.Renderer;
+        RendererType.API.stop_requested.store(false, .seq_cst);
+    } else {
         self.wakeup.wait(&self.loop, &self.wakeup_c, Thread, self, wakeupCallback);
         self.stop.wait(&self.loop, &self.stop_c, Thread, self, stopCallback);
         self.draw_now.wait(&self.loop, &self.draw_now_c, Thread, self, drawNowCallback);
@@ -267,13 +270,14 @@ fn threadMain_(self: *Thread) !void {
         // Native Windows render loop for DirectX.
         // xev's IOCP event loop is incompatible with D3D11 device context,
         // so we use a simple poll loop similar to Windows Terminal's RenderThread.
+        const RendererType = rendererpkg.Renderer;
         const w32 = struct {
             extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
             extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
         };
         var last_blink: u64 = w32.GetTickCount64();
 
-        while (true) {
+        while (!RendererType.API.stop_requested.load(.monotonic)) {
             self.drainMailbox() catch {};
 
             self.renderer.updateFrame(
@@ -289,7 +293,8 @@ fn threadMain_(self: *Thread) !void {
 
             self.renderer.drawFrame(false) catch {};
 
-            w32.Sleep(8);
+            // Adaptive sleep: 8ms (~120fps) when focused, 32ms (~30fps) when not
+            w32.Sleep(if (self.flags.focused) 8 else 32);
         }
     } else {
         _ = try self.loop.run(.until_done);

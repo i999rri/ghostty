@@ -37,6 +37,8 @@ const log = std.log.scoped(.directx);
 pub var current_device: ?*anyopaque = null;
 /// HWND stored from surfaceInit for device creation in threadEnter.
 pub var stored_hwnd: ?*anyopaque = null;
+/// Stop flag for native render loop (set by stop.notify via Thread.zig).
+pub var stop_requested: std.atomic.Value(bool) = .{ .raw = false };
 
 // C API from d3d11_impl.c
 pub const dx = struct {
@@ -100,6 +102,7 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
 }
 
 pub fn deinit(self: *DirectX) void {
+    stop_requested.store(true, .monotonic);
     if (self.device) |dev| dx.dx_destroy(dev);
     self.* = undefined;
 }
@@ -163,10 +166,27 @@ pub fn drawFrameEnd(self: *DirectX) void {
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
     _ = self;
     const dev = current_device orelse return .{ .width = 960, .height = 640 };
-    var w: u32 = 0;
-    var h: u32 = 0;
-    dx.dx_get_backbuffer_size(dev, &w, &h);
-    if (w == 0 or h == 0) return .{ .width = 960, .height = 640 };
+    const hwnd = stored_hwnd orelse return .{ .width = 960, .height = 640 };
+
+    // Get actual window client size and resize swap chain if needed.
+    // Safe to call from the native render loop (no xev IOCP interference).
+    const w32 = struct {
+        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
+    };
+    var rect: w32.RECT = undefined;
+    _ = w32.GetClientRect(hwnd, &rect);
+    const w: u32 = @intCast(@max(rect.right - rect.left, 1));
+    const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
+
+    // Resize swap chain if window size changed
+    var bbw: u32 = 0;
+    var bbh: u32 = 0;
+    dx.dx_get_backbuffer_size(dev, &bbw, &bbh);
+    if (bbw != w or bbh != h) {
+        dx.dx_resize(dev, w, h);
+    }
+
     return .{ .width = w, .height = h };
 }
 
