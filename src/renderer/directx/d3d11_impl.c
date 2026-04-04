@@ -15,6 +15,10 @@
 
 #include "d3d11_impl.h"
 
+// Thread-safe window size (set by main thread, read by renderer thread)
+static volatile uint32_t g_window_width = 0;
+static volatile uint32_t g_window_height = 0;
+
 // --- Device ---
 
 struct DxDevice {
@@ -571,5 +575,17 @@ DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode,
 
     return dx_create_pipeline(dev, vs_bytecode, vs_size, ps_bytecode, ps_size,
                               layout, sizeof(layout) / sizeof(layout[0]));
+}
+
+// --- Window resize notification ---
+
+void dx_set_window_size(uint32_t width, uint32_t height) {
+    g_window_width = width;
+    g_window_height = height;
+}
+
+void dx_get_window_size(uint32_t* width, uint32_t* height) {
+    *width = g_window_width;
+    *height = g_window_height;
 }
 

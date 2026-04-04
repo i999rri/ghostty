@@ -90,6 +90,10 @@ DxPipeline* dx_create_image_pipeline(DxDevice* dev, const void* vs_bytecode, uin
 DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,
                                           const void* ps_bytecode, uint32_t ps_size);
 
+// Window resize notification (thread-safe, called from main thread)
+void dx_set_window_size(uint32_t width, uint32_t height);
+void dx_get_window_size(uint32_t* width, uint32_t* height);
+
 #ifdef __cplusplus
 }
 #endif

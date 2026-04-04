@@ -27,6 +27,12 @@ pub const custom_shader_target: shadertoy.Target = .glsl;
 pub const custom_shader_y_is_down = true;
 pub const swap_chain_count = 2;
 
+/// Called from C++ WM_SIZE to update window size without cross-thread deadlock.
+export fn dx_notify_resize(w: u32, h: u32) void {
+    dx.dx_set_window_size(w, h);
+}
+
+
 /// Use a native Windows render loop instead of xev.
 /// xev's IOCP event loop stalls after D3D11 device creation.
 pub const native_render_loop = true;
@@ -37,7 +43,7 @@ const log = std.log.scoped(.directx);
 pub var current_device: ?*anyopaque = null;
 /// HWND stored from surfaceInit for device creation in threadEnter.
 pub var stored_hwnd: ?*anyopaque = null;
-/// Stop flag for native render loop (set by stop.notify via Thread.zig).
+/// Stop flag for native render loop.
 pub var stop_requested: std.atomic.Value(bool) = .{ .raw = false };
 
 // C API from d3d11_impl.c
@@ -55,6 +61,8 @@ pub const dx = struct {
     pub extern fn dx_get_backbuffer_size(?*anyopaque, *u32, *u32) void;
     pub extern fn dx_draw(?*anyopaque, u32, u32, u32) void;
     pub extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32, u32) void;
+    pub extern fn dx_set_window_size(u32, u32) void;
+    pub extern fn dx_get_window_size(*u32, *u32) void;
 
     pub const CompiledShader = extern struct { bytecode: ?*anyopaque, size: u32 };
     pub extern fn dx_compile_shader(?[*]const u8, u32, [*:0]const u8, [*:0]const u8) CompiledShader;
@@ -109,7 +117,20 @@ pub fn deinit(self: *DirectX) void {
 
 pub fn surfaceInit(surface: *apprt.Surface) !void {
     if (comptime builtin.os.tag != .windows) return;
-    stored_hwnd = @ptrCast(surface.platform.windows.hwnd);
+    const hwnd: ?*anyopaque = @ptrCast(surface.platform.windows.hwnd);
+    stored_hwnd = hwnd;
+
+    // Set initial window size (main thread, safe to call GetClientRect here)
+    const w32 = struct {
+        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
+    };
+    var rect: w32.RECT = undefined;
+    _ = w32.GetClientRect(hwnd, &rect);
+    dx.dx_set_window_size(
+        @intCast(@max(rect.right - rect.left, 1)),
+        @intCast(@max(rect.bottom - rect.top, 1)),
+    );
 }
 
 pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void {
@@ -166,27 +187,27 @@ pub fn drawFrameEnd(self: *DirectX) void {
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
     _ = self;
     const dev = current_device orelse return .{ .width = 960, .height = 640 };
-    const hwnd = stored_hwnd orelse return .{ .width = 960, .height = 640 };
 
-    // Get actual window client size and resize swap chain if needed.
-    // Safe to call from the native render loop (no xev IOCP interference).
-    const w32 = struct {
-        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
-        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
-    };
-    var rect: w32.RECT = undefined;
-    _ = w32.GetClientRect(hwnd, &rect);
-    const w: u32 = @intCast(@max(rect.right - rect.left, 1));
-    const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
-
-    // Resize swap chain if window size changed
-    var bbw: u32 = 0;
-    var bbh: u32 = 0;
-    dx.dx_get_backbuffer_size(dev, &bbw, &bbh);
-    if (bbw != w or bbh != h) {
-        dx.dx_resize(dev, w, h);
+    // Read window size set by main thread (WM_SIZE → dx_notify_resize).
+    // Cannot call GetClientRect from renderer thread (cross-thread deadlock).
+    var ww: u32 = 0;
+    var wh: u32 = 0;
+    dx.dx_get_window_size(&ww, &wh);
+    if (ww > 0 and wh > 0) {
+        var bbw: u32 = 0;
+        var bbh: u32 = 0;
+        dx.dx_get_backbuffer_size(dev, &bbw, &bbh);
+        if (bbw != ww or bbh != wh) {
+            dx.dx_resize(dev, ww, wh);
+        }
+        return .{ .width = ww, .height = wh };
     }
 
+    // Fallback to backbuffer size
+    var w: u32 = 0;
+    var h: u32 = 0;
+    dx.dx_get_backbuffer_size(dev, &w, &h);
+    if (w == 0 or h == 0) return .{ .width = 960, .height = 640 };
     return .{ .width = w, .height = h };
 }
 
