@@ -70,24 +70,32 @@ pub fn Buffer(comptime T: type) type {
             const byte_size: u32 = @intCast(data.len * @sizeOf(T));
             if (byte_size == 0) return;
 
+            // If buffer exists but is too small, recreate it
+            if (self.buffer != null and data.len > self.len) {
+                if (self.buffer) |buf| dx.dx_destroy_buffer(buf);
+                self.buffer = null;
+            }
+
             if (self.buffer) |buf| {
                 // Update existing buffer
                 dx.dx_update_buffer(dev, buf, @ptrCast(data.ptr), byte_size);
             } else {
-                // Create new buffer
-                // Constant buffers must be 16-byte aligned
-                var aligned_size = byte_size;
+                // Create new buffer with 2x capacity
+                const alloc_len = if (self.opts.target == .uniform) data.len else data.len * 2;
+                var alloc_size: u32 = @intCast(alloc_len * @sizeOf(T));
                 if (self.opts.target == .uniform) {
-                    aligned_size = (byte_size + 15) & ~@as(u32, 15);
+                    alloc_size = (alloc_size + 15) & ~@as(u32, 15);
                 }
                 self.buffer = dx.dx_create_buffer(
                     dev,
                     bindFlags(self.opts.target),
-                    aligned_size,
+                    alloc_size,
                     @ptrCast(data.ptr),
                 );
+                self.len = alloc_len;
+                return;
             }
-            self.len = data.len;
+            self.len = @max(self.len, data.len);
         }
 
         pub fn syncFromArrayLists(self: *Self, lists: []const std.ArrayListUnmanaged(T)) !usize {

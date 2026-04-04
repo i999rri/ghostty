@@ -71,11 +71,12 @@ pub fn step(self: *Self, s: Step) void {
         dx.dx_bind_constant_buffer(dev, buf, 1, true, true);
     }
 
-    // Determine vertex stride from pipeline layout type
+    // Determine vertex stride from pipeline layout type using actual struct sizes
+    const shaders_mod = @import("shaders.zig");
     const vertex_stride: u32 = switch (s.pipeline.layout_type) {
-        .cell_text => 32, // sizeof(CellText)
-        .bg_image => 8,   // sizeof(BgImage): f32(4) + u8(1) + 3 padding = 8 (4-byte aligned)
-        .image => 40,     // sizeof(Image): 2+2+4+2 floats = 40 bytes
+        .cell_text => @sizeOf(shaders_mod.CellText),
+        .bg_image => @sizeOf(shaders_mod.BgImage),
+        .image => @sizeOf(shaders_mod.Image),
         .none => 0,
     };
 
@@ -132,6 +133,30 @@ pub fn step(self: *Self, s: Step) void {
         .triangle_strip => 5, // D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP
     };
     if (s.draw.instance_count > 1) {
+        // Log instance count for cell_text draws
+        const ic: u32 = @intCast(s.draw.instance_count);
+        if (s.pipeline.layout_type == .cell_text) {
+            const k32 = struct {
+                extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
+                var last_count: u32 = 0;
+            };
+            if (ic != k32.last_count) {
+                k32.last_count = ic;
+                // Simple number output
+                var buf: [16]u8 = undefined;
+                buf[0] = 'I';
+                buf[1] = '=';
+                const n = ic;
+                var i: usize = 2;
+                if (n >= 1000) { buf[i] = '0' + @as(u8, @intCast((n / 1000) % 10)); i += 1; }
+                if (n >= 100) { buf[i] = '0' + @as(u8, @intCast((n / 100) % 10)); i += 1; }
+                if (n >= 10) { buf[i] = '0' + @as(u8, @intCast((n / 10) % 10)); i += 1; }
+                buf[i] = '0' + @as(u8, @intCast(n % 10)); i += 1;
+                buf[i] = '\n'; i += 1;
+                buf[i] = 0;
+                k32.OutputDebugStringA(@ptrCast(&buf));
+            }
+        }
         dx.dx_draw_instanced(dev,
             @intCast(s.draw.vertex_count),
             @intCast(s.draw.instance_count),
