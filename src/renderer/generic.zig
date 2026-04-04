@@ -1826,7 +1826,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         fn uploadBackgroundImage(self: *Self) !void {
-            // Make sure our bg image is uploaded if it needs to be.
             if (self.bg_image) |*bg| {
                 if (bg.isUnloading()) {
                     bg.deinit(self.alloc);
