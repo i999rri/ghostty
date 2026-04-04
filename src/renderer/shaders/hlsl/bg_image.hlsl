@@ -94,6 +94,10 @@ PSInput vs_main(VSInput input) {
 }
 
 float4 ps_main(PSInput input) : SV_Target {
+    // Background image: stretch to fill with opacity
+    // TODO: implement proper cover/contain/position modes
+    float4 img = image_tex.Sample(image_sampler, input.position.xy / screen_size);
+    return float4(img.rgb * 0.3, 1.0);
     bool use_linear_blending = (bools & USE_LINEAR_BLENDING) != 0;
 
     float2 tex_coord = (input.position.xy - input.offset) * input.scale;
