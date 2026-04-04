@@ -232,8 +232,6 @@ pub fn initTarget(self: *const DirectX, width: usize, height: usize) !Target {
 
 pub fn beginFrame(self: *DirectX, renderer: *Renderer, target: *Target) !Frame {
     _ = self;
-    // beginFrame is only called when needs_redraw=true.
-    // Clear and set up the backbuffer for this frame's render passes.
     const dev = current_device orelse return Frame.begin(renderer, target);
     var w: u32 = 0;
     var h: u32 = 0;
@@ -243,11 +241,6 @@ pub fn beginFrame(self: *DirectX, renderer: *Renderer, target: *Target) !Frame {
     dx.dx_set_blend_enabled(dev, false);
     dx.dx_ensure_default_sampler(dev);
     dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
-    // Log that beginFrame ran (means needs_redraw=true)
-    const k32 = struct {
-        extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
-    };
-    k32.OutputDebugStringA("beginFrame: needs_redraw=true\n");
     return Frame.begin(renderer, target);
 }
 
