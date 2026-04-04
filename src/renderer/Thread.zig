@@ -270,14 +270,27 @@ fn threadMain_(self: *Thread) !void {
         // Native Windows render loop for DirectX.
         // xev's IOCP event loop is incompatible with D3D11 device context,
         // so we use a simple poll loop similar to Windows Terminal's RenderThread.
+        //
+        // Register stop handler: when Surface calls stop.notify(), run the
+        // xev loop briefly to process it and set our atomic flag.
         const RendererType = rendererpkg.Renderer;
+        RendererType.API.stop_requested.store(false, .monotonic);
+        self.stop.wait(&self.loop, &self.stop_c, Thread, self, nativeStopCallback);
+
         const w32 = struct {
             extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
             extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+            extern "winmm" fn timeBeginPeriod(u32) callconv(.winapi) u32;
+            extern "winmm" fn timeEndPeriod(u32) callconv(.winapi) u32;
         };
+        // Set timer resolution to 1ms for accurate Sleep
+        _ = w32.timeBeginPeriod(1);
+        defer _ = w32.timeEndPeriod(1);
         var last_blink: u64 = w32.GetTickCount64();
 
         while (!RendererType.API.stop_requested.load(.monotonic)) {
+            // Poll xev for stop signal (non-blocking)
+            _ = self.loop.run(.no_wait) catch {};
             self.drainMailbox() catch {};
 
             self.renderer.updateFrame(
@@ -293,8 +306,8 @@ fn threadMain_(self: *Thread) !void {
 
             self.renderer.drawFrame(false) catch {};
 
-            // Adaptive sleep: 8ms (~120fps) when focused, 32ms (~30fps) when not
-            w32.Sleep(if (self.flags.focused) 8 else 32);
+            // Adaptive sleep: 4ms (~240fps) when focused, 16ms (~60fps) when not
+            w32.Sleep(if (self.flags.focused) 4 else 16);
         }
     } else {
         _ = try self.loop.run(.until_done);
@@ -734,6 +747,22 @@ fn stopCallback(
 ) xev.CallbackAction {
     _ = r catch unreachable;
     self_.?.loop.stop();
+    return .disarm;
+}
+
+/// Stop callback for native render loop. Sets the atomic flag
+/// so the poll loop exits.
+fn nativeStopCallback(
+    _: ?*Thread,
+    _: *xev.Loop,
+    _: *xev.Completion,
+    r: xev.Async.WaitError!void,
+) xev.CallbackAction {
+    _ = r catch return .disarm;
+    const RendererType = rendererpkg.Renderer;
+    if (@hasDecl(RendererType, "API") and @hasDecl(RendererType.API, "stop_requested")) {
+        RendererType.API.stop_requested.store(true, .monotonic);
+    }
     return .disarm;
 }
 
