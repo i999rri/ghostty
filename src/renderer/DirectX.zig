@@ -49,6 +49,7 @@ pub const dx = struct {
     pub extern fn dx_get_backbuffer_size(?*anyopaque, *u32, *u32) void;
     pub extern fn dx_draw(?*anyopaque, u32, u32, u32) void;
     pub extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32, u32) void;
+    pub extern fn dx_test_draw(?*anyopaque) void;
 
     pub const CompiledShader = extern struct { bytecode: ?*anyopaque, size: u32 };
     pub extern fn dx_compile_shader(?[*]const u8, u32, [*:0]const u8, [*:0]const u8) CompiledShader;
@@ -86,6 +87,7 @@ alloc: std.mem.Allocator,
 blending: configpkg.Config.AlphaBlending,
 last_target: ?Target = null,
 device: ?*anyopaque = null,
+frame_rendered: bool = false,
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
     log.info("initializing DirectX 11 renderer", .{});
@@ -142,32 +144,33 @@ pub fn displayRealized(self: *const DirectX) void {
 }
 
 pub fn drawFrameStart(self: *DirectX) void {
-    if (self.device) |dev| {
-        var w: u32 = 0;
-        var h: u32 = 0;
-        dx.dx_get_backbuffer_size(dev, &w, &h);
-        dx.dx_set_viewport(dev, w, h);
-        dx.dx_bind_backbuffer(dev);
-        dx.dx_set_blend_enabled(dev, false);
-        dx.dx_ensure_default_sampler(dev);
-        dx.dx_clear(dev, 0.0, 0.0, 1.0, 1.0); // Blue = debug
-    }
+    self.frame_rendered = false;
+    // Use global device - self.device may not persist due to value copy semantics
+    const dev = current_device orelse return;
+    self.device = dev;
+    var w: u32 = 0;
+    var h: u32 = 0;
+    dx.dx_get_backbuffer_size(dev, &w, &h);
+    dx.dx_set_viewport(dev, w, h);
+    dx.dx_bind_backbuffer(dev);
+    dx.dx_set_blend_enabled(dev, false);
+    dx.dx_ensure_default_sampler(dev);
+    dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
 }
 
 pub fn drawFrameEnd(self: *DirectX) void {
-    if (self.device) |dev| {
-        dx.dx_present(dev, false);
-    }
+    const dev = current_device orelse return;
+    self.frame_rendered = true;
+    dx.dx_present(dev, false);
 }
 
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
-    if (self.device) |dev| {
-        var w: u32 = 0;
-        var h: u32 = 0;
-        dx.dx_get_backbuffer_size(dev, &w, &h);
-        return .{ .width = w, .height = h };
-    }
-    return .{ .width = 960, .height = 640 };
+    _ = self;
+    const dev = current_device orelse return .{ .width = 960, .height = 640 };
+    var w: u32 = 0;
+    var h: u32 = 0;
+    dx.dx_get_backbuffer_size(dev, &w, &h);
+    return .{ .width = w, .height = h };
 }
 
 pub fn initShaders(
@@ -199,9 +202,10 @@ pub fn present(self: *DirectX, target: Target) !void {
 }
 
 pub fn presentLastTarget(self: *DirectX) !void {
-    if (self.device) |dev| {
-        dx.dx_present(dev, false);
-    }
+    // With DXGI_SWAP_EFFECT_DISCARD, backbuffer content is undefined after Present.
+    // We can't re-present the last frame. Just present what's there.
+    // The real fix is to always redraw, but for now this avoids a second Present call.
+    _ = self;
 }
 
 pub fn initAtlasTexture(self: *const DirectX, atlas: anytype) !Texture {

@@ -48,5 +48,5 @@ float4 ps_main(VSOutput input) : SV_Target {
         use_linear_blending
     );
 
-    return float4(1.0, 0.0, 1.0, 1.0); // TEST magenta
+    return cell_color;
 }

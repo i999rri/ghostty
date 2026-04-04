@@ -42,6 +42,7 @@ pub const Step = struct {
 };
 
 device: ?*anyopaque,
+cleared: bool = false,
 
 pub fn begin(device: ?*anyopaque, opts: Options) Self {
     _ = opts;
@@ -49,16 +50,32 @@ pub fn begin(device: ?*anyopaque, opts: Options) Self {
 }
 
 pub fn step(self: *Self, s: Step) void {
+    const DirectXMod = @import("../DirectX.zig");
     const dev = self.device orelse return;
 
     // Get pipeline handle (lazy creation on renderer thread)
     const pipe = s.pipeline.getHandle(dev) orelse return;
 
-    // Set full D3D11 state
-    var w: u32 = 0;
-    var h: u32 = 0;
-    dx.dx_get_backbuffer_size(dev, &w, &h);
-    dx.dx_set_viewport(dev, w, h);
+    // On first step of the render pass, clear and set up backbuffer
+    if (!self.cleared) {
+        self.cleared = true;
+        var w: u32 = 0;
+        var h: u32 = 0;
+        dx.dx_get_backbuffer_size(dev, &w, &h);
+        dx.dx_set_viewport(dev, w, h);
+        dx.dx_bind_backbuffer(dev);
+        dx.dx_ensure_default_sampler(dev);
+        dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
+        DirectXMod.current_device = dev;
+    }
+
+    // Set per-step D3D11 state
+    {
+        var w: u32 = 0;
+        var h: u32 = 0;
+        dx.dx_get_backbuffer_size(dev, &w, &h);
+        dx.dx_set_viewport(dev, w, h);
+    }
     dx.dx_bind_backbuffer(dev);
     dx.dx_set_blend_enabled(dev, s.pipeline.blending_enabled);
     dx.dx_bind_pipeline(dev, pipe);
@@ -69,16 +86,6 @@ pub fn step(self: *Self, s: Step) void {
     // Bind uniform constant buffer at slot 1
     if (s.uniforms) |buf| {
         dx.dx_bind_constant_buffer(dev, buf, 1, true, true);
-    } else {
-        // Log once that uniforms is null
-        const k32 = struct {
-            extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
-            var logged: bool = false;
-        };
-        if (!k32.logged) {
-            k32.OutputDebugStringA("RenderPass: uniforms buffer is NULL\n");
-            k32.logged = true;
-        }
     }
 
     // Determine vertex stride from pipeline layout type

@@ -24,6 +24,7 @@ struct DxDevice {
     ID3D11RenderTargetView* backbuffer_rtv;
     ID3D11BlendState* blend_on;
     ID3D11BlendState* blend_off;
+    ID3D11RasterizerState* rasterizer_state;
     D3D_FEATURE_LEVEL feature_level;
     HWND hwnd;
 };
@@ -87,11 +88,26 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     bd.RenderTarget[0].BlendEnable = FALSE;
     ID3D11Device_CreateBlendState(dev->device, &bd, &dev->blend_off);
 
+    // Create rasterizer state with no culling (full-screen triangles have CCW winding in screen space)
+    D3D11_RASTERIZER_DESC rd = {0};
+    rd.FillMode = D3D11_FILL_SOLID;
+    rd.CullMode = D3D11_CULL_NONE;
+    rd.FrontCounterClockwise = FALSE;
+    rd.DepthClipEnable = TRUE;
+    rd.ScissorEnable = FALSE;
+    rd.MultisampleEnable = FALSE;
+    rd.AntialiasedLineEnable = FALSE;
+    ID3D11Device_CreateRasterizerState(dev->device, &rd, &dev->rasterizer_state);
+    if (dev->rasterizer_state) {
+        ID3D11DeviceContext_RSSetState(dev->context, dev->rasterizer_state);
+    }
+
     return dev;
 }
 
 void dx_destroy(DxDevice* dev) {
     if (!dev) return;
+    if (dev->rasterizer_state) ID3D11RasterizerState_Release(dev->rasterizer_state);
     if (dev->blend_off) ID3D11BlendState_Release(dev->blend_off);
     if (dev->blend_on) ID3D11BlendState_Release(dev->blend_on);
     if (dev->backbuffer_rtv) ID3D11RenderTargetView_Release(dev->backbuffer_rtv);
@@ -542,4 +558,47 @@ DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode,
 
     return dx_create_pipeline(dev, vs_bytecode, vs_size, ps_bytecode, ps_size,
                               layout, sizeof(layout) / sizeof(layout[0]));
+}
+
+// --- Debug test draw ---
+
+void dx_test_draw(DxDevice* dev) {
+    if (!dev) return;
+
+    static ID3D11VertexShader* test_vs = NULL;
+    static ID3D11PixelShader* test_ps = NULL;
+    static int initialized = 0;
+
+    if (!initialized) {
+        initialized = 1;
+        const char* shader_src =
+            "float4 vs_main(uint vid : SV_VertexID) : SV_Position {\n"
+            "  float2 pos[3] = { float2(0, 0.5), float2(0.5, -0.5), float2(-0.5, -0.5) };\n"
+            "  return float4(pos[vid], 0, 1);\n"
+            "}\n"
+            "float4 ps_main(float4 pos : SV_Position) : SV_Target {\n"
+            "  return float4(0, 1, 1, 1);\n"
+            "}\n";
+
+        DxCompiledShader vs = dx_compile_shader(shader_src, (uint32_t)strlen(shader_src), "vs_main", "vs_5_0");
+        DxCompiledShader ps = dx_compile_shader(shader_src, (uint32_t)strlen(shader_src), "ps_main", "ps_5_0");
+
+        if (vs.bytecode && ps.bytecode) {
+            ID3D11Device_CreateVertexShader(dev->device, vs.bytecode, vs.size, NULL, &test_vs);
+            ID3D11Device_CreatePixelShader(dev->device, ps.bytecode, ps.size, NULL, &test_ps);
+            OutputDebugStringA("dx_test_draw: shaders compiled OK\n");
+        } else {
+            OutputDebugStringA("dx_test_draw: shader compilation FAILED\n");
+        }
+        dx_free_compiled_shader(vs);
+        dx_free_compiled_shader(ps);
+    }
+
+    if (!test_vs || !test_ps) return;
+
+    ID3D11DeviceContext_VSSetShader(dev->context, test_vs, NULL, 0);
+    ID3D11DeviceContext_PSSetShader(dev->context, test_ps, NULL, 0);
+    ID3D11DeviceContext_IASetInputLayout(dev->context, NULL);
+    ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ID3D11DeviceContext_Draw(dev->context, 3, 0);
 }

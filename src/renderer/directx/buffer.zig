@@ -90,13 +90,58 @@ pub fn Buffer(comptime T: type) type {
             self.len = data.len;
         }
 
-        pub fn syncFromArrayLists(self: *Self, lists: anytype) !usize {
-            _ = self;
-            var total: usize = 0;
+        pub fn syncFromArrayLists(self: *Self, lists: []const std.ArrayListUnmanaged(T)) !usize {
+            const dev = DirectX.current_device orelse return 0;
+
+            var total_len: usize = 0;
             for (lists) |list| {
-                total += list.items.len;
+                total_len += list.items.len;
             }
-            return total;
+            if (total_len == 0) return 0;
+
+            const byte_size: u32 = @intCast(total_len * @sizeOf(T));
+
+            // If buffer doesn't exist or is too small, recreate
+            if (self.buffer == null or total_len > self.len) {
+                if (self.buffer) |buf| dx.dx_destroy_buffer(buf);
+                self.len = total_len * 2;
+                const alloc_size: u32 = @intCast(self.len * @sizeOf(T));
+                self.buffer = dx.dx_create_buffer(
+                    dev,
+                    bindFlags(self.opts.target),
+                    alloc_size,
+                    null,
+                );
+            }
+
+            if (self.buffer == null) return 0;
+
+            // Copy all lists into a contiguous temporary buffer, then upload
+            // For efficiency with small data, stack-allocate up to 64KB
+            if (byte_size <= 65536) {
+                var tmp: [65536]u8 = undefined;
+                var offset: usize = 0;
+                for (lists) |list| {
+                    const items_bytes = std.mem.sliceAsBytes(list.items);
+                    @memcpy(tmp[offset..][0..items_bytes.len], items_bytes);
+                    offset += items_bytes.len;
+                }
+                dx.dx_update_buffer(dev, self.buffer, &tmp, byte_size);
+            } else {
+                // Large data: use heap allocation
+                const alloc = std.heap.page_allocator;
+                const tmp = alloc.alloc(u8, byte_size) catch return 0;
+                defer alloc.free(tmp);
+                var offset: usize = 0;
+                for (lists) |list| {
+                    const items_bytes = std.mem.sliceAsBytes(list.items);
+                    @memcpy(tmp[offset..][0..items_bytes.len], items_bytes);
+                    offset += items_bytes.len;
+                }
+                dx.dx_update_buffer(dev, self.buffer, tmp.ptr, byte_size);
+            }
+
+            return total_len;
         }
     };
 }
