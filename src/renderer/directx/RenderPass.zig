@@ -42,7 +42,6 @@ pub const Step = struct {
 };
 
 device: ?*anyopaque,
-cleared: bool = false,
 
 pub fn begin(device: ?*anyopaque, opts: Options) Self {
     _ = opts;
@@ -50,32 +49,16 @@ pub fn begin(device: ?*anyopaque, opts: Options) Self {
 }
 
 pub fn step(self: *Self, s: Step) void {
-    const DirectXMod = @import("../DirectX.zig");
     const dev = self.device orelse return;
 
     // Get pipeline handle (lazy creation on renderer thread)
     const pipe = s.pipeline.getHandle(dev) orelse return;
 
-    // On first step of the render pass, clear and set up backbuffer
-    if (!self.cleared) {
-        self.cleared = true;
-        var w: u32 = 0;
-        var h: u32 = 0;
-        dx.dx_get_backbuffer_size(dev, &w, &h);
-        dx.dx_set_viewport(dev, w, h);
-        dx.dx_bind_backbuffer(dev);
-        dx.dx_ensure_default_sampler(dev);
-        dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
-        DirectXMod.current_device = dev;
-    }
-
-    // Set per-step D3D11 state
-    {
-        var w: u32 = 0;
-        var h: u32 = 0;
-        dx.dx_get_backbuffer_size(dev, &w, &h);
-        dx.dx_set_viewport(dev, w, h);
-    }
+    // Set D3D11 state (viewport/backbuffer already set by drawFrameStart)
+    var w: u32 = 0;
+    var h: u32 = 0;
+    dx.dx_get_backbuffer_size(dev, &w, &h);
+    dx.dx_set_viewport(dev, w, h);
     dx.dx_bind_backbuffer(dev);
     dx.dx_set_blend_enabled(dev, s.pipeline.blending_enabled);
     dx.dx_bind_pipeline(dev, pipe);
@@ -96,25 +79,17 @@ pub fn step(self: *Self, s: Step) void {
         .none => 0,
     };
 
-    // Bind buffers
+    // Bind vertex buffer (first buffer when pipeline has input layout)
     const has_vertex_data = (s.pipeline.layout_type != .none);
-    for (s.buffers, 0..) |buf_opt, i| {
-        if (buf_opt) |buf| {
-            if (i == 0 and has_vertex_data and vertex_stride > 0) {
-                // First buffer is vertex/instance data when pipeline has input layout
+    if (has_vertex_data and s.buffers.len > 0) {
+        if (s.buffers[0]) |buf| {
+            if (vertex_stride > 0) {
                 dx.dx_bind_vertex_buffer(dev, buf, vertex_stride, 0);
-            } else {
-                // SRV buffer: slot depends on whether first buffer was VB
-                const srv_slot: u32 = if (has_vertex_data)
-                    @intCast(i) // VB at 0, SRVs start at buffer index
-                else
-                    @intCast(i + 1); // no VB, SRVs at slot i+1
-                dx.dx_bind_srv_buffer(dev, buf, srv_slot, 4);
             }
         }
     }
 
-    // Bind textures
+    // Bind textures first (they occupy SRV slots 0..n-1)
     for (s.textures, 0..) |tex_opt, i| {
         if (tex_opt) |tex| {
             if (tex.dx_handle) |handle| {
@@ -128,6 +103,25 @@ pub fn step(self: *Self, s: Step) void {
         if (samp_opt) |samp| {
             if (samp.dx_handle) |handle| {
                 dx.dx_bind_sampler(dev, handle, @intCast(i));
+            }
+        }
+    }
+
+    // Bind SRV buffers AFTER textures.
+    // Slot = textures.len + srv_index (so they don't overlap texture slots).
+    // For cell_bg (no textures): bg_cells at slot 0+1=1 (register t1)
+    // For cell_text (2 textures): bg_colors at slot 2+0=2 (register t2)
+    {
+        const tex_count: u32 = @intCast(s.textures.len);
+        var srv_index: u32 = 0;
+        const start: usize = if (has_vertex_data) 1 else 0;
+        for (s.buffers[start..]) |buf_opt| {
+            if (buf_opt) |buf| {
+                // Slot 0 is reserved (cbuffer at b0 convention or first texture),
+                // so SRV buffers start at max(tex_count, 1) + srv_index
+                const base_slot = if (tex_count > 0) tex_count else 1;
+                dx.dx_bind_srv_buffer(dev, buf, base_slot + srv_index, 4);
+                srv_index += 1;
             }
         }
     }

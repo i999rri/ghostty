@@ -32,7 +32,7 @@ const log = std.log.scoped(.directx);
 /// Global device handle, accessible by Buffer/Texture/etc.
 pub var current_device: ?*anyopaque = null;
 /// HWND stored from surfaceInit for device creation in threadEnter.
-var stored_hwnd: ?*anyopaque = null;
+pub var stored_hwnd: ?*anyopaque = null;
 
 // C API from d3d11_impl.c
 pub const dx = struct {
@@ -49,7 +49,6 @@ pub const dx = struct {
     pub extern fn dx_get_backbuffer_size(?*anyopaque, *u32, *u32) void;
     pub extern fn dx_draw(?*anyopaque, u32, u32, u32) void;
     pub extern fn dx_draw_instanced(?*anyopaque, u32, u32, u32, u32, u32) void;
-    pub extern fn dx_test_draw(?*anyopaque) void;
 
     pub const CompiledShader = extern struct { bytecode: ?*anyopaque, size: u32 };
     pub extern fn dx_compile_shader(?[*]const u8, u32, [*:0]const u8, [*:0]const u8) CompiledShader;
@@ -87,7 +86,6 @@ alloc: std.mem.Allocator,
 blending: configpkg.Config.AlphaBlending,
 last_target: ?Target = null,
 device: ?*anyopaque = null,
-frame_rendered: bool = false,
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
     log.info("initializing DirectX 11 renderer", .{});
@@ -144,10 +142,8 @@ pub fn displayRealized(self: *const DirectX) void {
 }
 
 pub fn drawFrameStart(self: *DirectX) void {
-    self.frame_rendered = false;
-    // Use global device - self.device may not persist due to value copy semantics
+    _ = self;
     const dev = current_device orelse return;
-    self.device = dev;
     var w: u32 = 0;
     var h: u32 = 0;
     dx.dx_get_backbuffer_size(dev, &w, &h);
@@ -159,17 +155,34 @@ pub fn drawFrameStart(self: *DirectX) void {
 }
 
 pub fn drawFrameEnd(self: *DirectX) void {
+    _ = self;
     const dev = current_device orelse return;
-    self.frame_rendered = true;
     dx.dx_present(dev, false);
 }
 
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
     _ = self;
     const dev = current_device orelse return .{ .width = 960, .height = 640 };
-    var w: u32 = 0;
-    var h: u32 = 0;
-    dx.dx_get_backbuffer_size(dev, &w, &h);
+    const hwnd = stored_hwnd orelse return .{ .width = 960, .height = 640 };
+
+    // Get actual window client size
+    const w32 = struct {
+        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
+    };
+    var rect: w32.RECT = undefined;
+    _ = w32.GetClientRect(hwnd, &rect);
+    const w: u32 = @intCast(@max(rect.right - rect.left, 1));
+    const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
+
+    // Resize swap chain if window size changed
+    var bbw: u32 = 0;
+    var bbh: u32 = 0;
+    dx.dx_get_backbuffer_size(dev, &bbw, &bbh);
+    if (bbw != w or bbh != h) {
+        dx.dx_resize(dev, w, h);
+    }
+
     return .{ .width = w, .height = h };
 }
 
@@ -194,6 +207,17 @@ pub fn initTarget(self: *const DirectX, width: usize, height: usize) !Target {
 
 pub fn beginFrame(self: *DirectX, renderer: *Renderer, target: *Target) !Frame {
     _ = self;
+    // beginFrame is only called when needs_redraw=true.
+    // Clear and set up the backbuffer for this frame's render passes.
+    const dev = current_device orelse return Frame.begin(renderer, target);
+    var w: u32 = 0;
+    var h: u32 = 0;
+    dx.dx_get_backbuffer_size(dev, &w, &h);
+    dx.dx_set_viewport(dev, w, h);
+    dx.dx_bind_backbuffer(dev);
+    dx.dx_set_blend_enabled(dev, false);
+    dx.dx_ensure_default_sampler(dev);
+    dx.dx_clear(dev, 1.0, 0.0, 0.0, 1.0); // RED = build applied
     return Frame.begin(renderer, target);
 }
 
@@ -202,10 +226,9 @@ pub fn present(self: *DirectX, target: Target) !void {
 }
 
 pub fn presentLastTarget(self: *DirectX) !void {
-    // With DXGI_SWAP_EFFECT_DISCARD, backbuffer content is undefined after Present.
-    // We can't re-present the last frame. Just present what's there.
-    // The real fix is to always redraw, but for now this avoids a second Present call.
     _ = self;
+    // No-op: DWM keeps showing the last presented frame.
+    // With DXGI_SWAP_EFFECT_DISCARD, we can't re-present stale content.
 }
 
 pub fn initAtlasTexture(self: *const DirectX, atlas: anytype) !Texture {

@@ -90,9 +90,6 @@ DxPipeline* dx_create_image_pipeline(DxDevice* dev, const void* vs_bytecode, uin
 DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,
                                           const void* ps_bytecode, uint32_t ps_size);
 
-// Debug test draw
-void dx_test_draw(DxDevice* dev);
-
 #ifdef __cplusplus
 }
 #endif

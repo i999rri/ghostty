@@ -27,6 +27,8 @@ struct DxDevice {
     ID3D11RasterizerState* rasterizer_state;
     D3D_FEATURE_LEVEL feature_level;
     HWND hwnd;
+    uint32_t bb_width;
+    uint32_t bb_height;
 };
 
 static void dx_create_backbuffer_rtv(DxDevice* dev) {
@@ -57,7 +59,10 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
     D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
-    UINT flags = D3D11_CREATE_DEVICE_DEBUG;
+    UINT flags = 0;
+#ifndef NDEBUG
+    flags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
 
     HRESULT hr = D3D11CreateDeviceAndSwapChain(
         NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags,
@@ -72,6 +77,8 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     OutputDebugStringA("D3D11: Device created successfully\n");
 
     dx_create_backbuffer_rtv(dev);
+    dev->bb_width = width;
+    dev->bb_height = height;
 
     // Create blend states
     D3D11_BLEND_DESC bd = {0};
@@ -119,14 +126,27 @@ void dx_destroy(DxDevice* dev) {
 
 void dx_resize(DxDevice* dev, uint32_t width, uint32_t height) {
     if (!dev || width == 0 || height == 0) return;
-    // Release old RTV
+    if (dev->bb_width == width && dev->bb_height == height) return;
+
+    // Clear all state that references the backbuffer
+    ID3D11ShaderResourceView* nullSRVs[8] = {0};
+    ID3D11DeviceContext_PSSetShaderResources(dev->context, 0, 8, nullSRVs);
+    ID3D11DeviceContext_VSSetShaderResources(dev->context, 0, 8, nullSRVs);
+    ID3D11DeviceContext_OMSetRenderTargets(dev->context, 0, NULL, NULL);
+
     if (dev->backbuffer_rtv) {
-        ID3D11DeviceContext_OMSetRenderTargets(dev->context, 0, NULL, NULL);
         ID3D11RenderTargetView_Release(dev->backbuffer_rtv);
         dev->backbuffer_rtv = NULL;
     }
-    IDXGISwapChain_ResizeBuffers(dev->swap_chain, 0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-    dx_create_backbuffer_rtv(dev);
+
+    ID3D11DeviceContext_Flush(dev->context);
+
+    HRESULT hr = IDXGISwapChain_ResizeBuffers(dev->swap_chain, 0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    if (SUCCEEDED(hr)) {
+        dx_create_backbuffer_rtv(dev);
+        dev->bb_width = width;
+        dev->bb_height = height;
+    }
 }
 
 void dx_present(DxDevice* dev, bool vsync) {
@@ -181,15 +201,8 @@ void dx_ensure_default_sampler(DxDevice* dev) {
 
 void dx_get_backbuffer_size(DxDevice* dev, uint32_t* width, uint32_t* height) {
     if (!dev) { *width = 0; *height = 0; return; }
-    ID3D11Texture2D* back_buffer = NULL;
-    IDXGISwapChain_GetBuffer(dev->swap_chain, 0, &IID_ID3D11Texture2D, (void**)&back_buffer);
-    if (back_buffer) {
-        D3D11_TEXTURE2D_DESC desc;
-        ID3D11Texture2D_GetDesc(back_buffer, &desc);
-        *width = desc.Width;
-        *height = desc.Height;
-        ID3D11Texture2D_Release(back_buffer);
-    }
+    *width = dev->bb_width;
+    *height = dev->bb_height;
 }
 
 // --- Buffer ---
@@ -560,45 +573,3 @@ DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode,
                               layout, sizeof(layout) / sizeof(layout[0]));
 }
 
-// --- Debug test draw ---
-
-void dx_test_draw(DxDevice* dev) {
-    if (!dev) return;
-
-    static ID3D11VertexShader* test_vs = NULL;
-    static ID3D11PixelShader* test_ps = NULL;
-    static int initialized = 0;
-
-    if (!initialized) {
-        initialized = 1;
-        const char* shader_src =
-            "float4 vs_main(uint vid : SV_VertexID) : SV_Position {\n"
-            "  float2 pos[3] = { float2(0, 0.5), float2(0.5, -0.5), float2(-0.5, -0.5) };\n"
-            "  return float4(pos[vid], 0, 1);\n"
-            "}\n"
-            "float4 ps_main(float4 pos : SV_Position) : SV_Target {\n"
-            "  return float4(0, 1, 1, 1);\n"
-            "}\n";
-
-        DxCompiledShader vs = dx_compile_shader(shader_src, (uint32_t)strlen(shader_src), "vs_main", "vs_5_0");
-        DxCompiledShader ps = dx_compile_shader(shader_src, (uint32_t)strlen(shader_src), "ps_main", "ps_5_0");
-
-        if (vs.bytecode && ps.bytecode) {
-            ID3D11Device_CreateVertexShader(dev->device, vs.bytecode, vs.size, NULL, &test_vs);
-            ID3D11Device_CreatePixelShader(dev->device, ps.bytecode, ps.size, NULL, &test_ps);
-            OutputDebugStringA("dx_test_draw: shaders compiled OK\n");
-        } else {
-            OutputDebugStringA("dx_test_draw: shader compilation FAILED\n");
-        }
-        dx_free_compiled_shader(vs);
-        dx_free_compiled_shader(ps);
-    }
-
-    if (!test_vs || !test_ps) return;
-
-    ID3D11DeviceContext_VSSetShader(dev->context, test_vs, NULL, 0);
-    ID3D11DeviceContext_PSSetShader(dev->context, test_ps, NULL, 0);
-    ID3D11DeviceContext_IASetInputLayout(dev->context, NULL);
-    ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D11DeviceContext_Draw(dev->context, 3, 0);
-}

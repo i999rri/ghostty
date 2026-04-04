@@ -28,6 +28,7 @@ struct PSInput {
     nointerpolation uint atlas : ATLAS;
     nointerpolation float4 color : COLOR;
     nointerpolation float4 bg_color : BG_COLOR;
+    nointerpolation uint is_cursor : IS_CURSOR;
     float2 tex_coord : TEXCOORD;
 };
 
@@ -74,6 +75,8 @@ PSInput vs_main(VSInput input) {
     if ((input.glyph_bools & IS_CURSOR_GLYPH) == 0 && is_cursor_pos) {
         output.color = load_color(unpack4u8(cursor_color_packed_4u8), use_linear_blending);
     }
+
+    output.is_cursor = (input.glyph_bools & IS_CURSOR_GLYPH);
 
     return output;
 }
