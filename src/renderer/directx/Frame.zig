@@ -23,10 +23,9 @@ pub fn renderPass(self: *const Self, attachments: []const RenderPass.Options.Att
 }
 
 pub fn complete(self: *const Self, sync: bool) void {
-    _ = self;
-    if (sync) {
-        // Flush the D3D11 command queue to ensure all commands are submitted.
-        // D3D11 doesn't have a direct equivalent of glFinish(), but
-        // the present call in drawFrameEnd handles synchronization.
-    }
+    _ = sync;
+    // Report frame health and release the swap chain semaphore.
+    // Without this, the semaphore exhausts after swap_chain_count frames
+    // and nextFrame() blocks forever.
+    self.renderer.frameCompleted(.healthy);
 }

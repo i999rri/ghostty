@@ -235,31 +235,65 @@ fn threadMain_(self: *Thread) !void {
     try self.renderer.threadEnter(self.surface);
     defer self.renderer.threadExit();
 
-    // Start the async handlers
-    self.wakeup.wait(&self.loop, &self.wakeup_c, Thread, self, wakeupCallback);
-    self.stop.wait(&self.loop, &self.stop_c, Thread, self, stopCallback);
-    self.draw_now.wait(&self.loop, &self.draw_now_c, Thread, self, drawNowCallback);
+    // DirectX: xev's IOCP loop stalls after D3D11 device creation.
+    // Use a simple native render loop instead.
+    const use_native_loop = comptime blk: {
+        const RendererType = rendererpkg.Renderer;
+        break :blk @hasDecl(RendererType, "API") and @hasDecl(RendererType.API, "native_render_loop") and RendererType.API.native_render_loop;
+    };
 
-    // Send an initial wakeup message so that we render right away.
-    try self.wakeup.notify();
+    if (!use_native_loop) {
+        self.wakeup.wait(&self.loop, &self.wakeup_c, Thread, self, wakeupCallback);
+        self.stop.wait(&self.loop, &self.stop_c, Thread, self, stopCallback);
+        self.draw_now.wait(&self.loop, &self.draw_now_c, Thread, self, drawNowCallback);
+        try self.wakeup.notify();
 
-    // Start blinking the cursor.
-    self.cursor_h.run(
-        &self.loop,
-        &self.cursor_c,
-        cursorBlinkInterval(),
-        Thread,
-        self,
-        cursorTimerCallback,
-    );
-
-    // Start the draw timer
-    self.syncDrawTimer();
+        self.cursor_h.run(
+            &self.loop,
+            &self.cursor_c,
+            cursorBlinkInterval(),
+            Thread,
+            self,
+            cursorTimerCallback,
+        );
+        self.syncDrawTimer();
+    }
 
     // Run
     log.debug("starting renderer thread", .{});
     defer log.debug("starting renderer thread shutdown", .{});
-    _ = try self.loop.run(.until_done);
+
+    if (use_native_loop) {
+        // Native Windows render loop for DirectX.
+        // xev's IOCP event loop is incompatible with D3D11 device context,
+        // so we use a simple poll loop similar to Windows Terminal's RenderThread.
+        const w32 = struct {
+            extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
+            extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+        };
+        var last_blink: u64 = w32.GetTickCount64();
+
+        while (true) {
+            self.drainMailbox() catch {};
+
+            self.renderer.updateFrame(
+                self.state,
+                self.flags.cursor_blink_visible,
+            ) catch {};
+
+            const now = w32.GetTickCount64();
+            if (now - last_blink >= cursorBlinkInterval()) {
+                self.flags.cursor_blink_visible = !self.flags.cursor_blink_visible;
+                last_blink = now;
+            }
+
+            self.renderer.drawFrame(false) catch {};
+
+            w32.Sleep(8);
+        }
+    } else {
+        _ = try self.loop.run(.until_done);
+    }
 }
 
 fn setQosClass(self: *const Thread) void {

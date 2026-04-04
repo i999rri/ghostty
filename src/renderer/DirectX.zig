@@ -27,6 +27,10 @@ pub const custom_shader_target: shadertoy.Target = .glsl;
 pub const custom_shader_y_is_down = true;
 pub const swap_chain_count = 2;
 
+/// Use a native Windows render loop instead of xev.
+/// xev's IOCP event loop stalls after D3D11 device creation.
+pub const native_render_loop = true;
+
 const log = std.log.scoped(.directx);
 
 /// Global device handle, accessible by Buffer/Texture/etc.
@@ -101,7 +105,6 @@ pub fn deinit(self: *DirectX) void {
 }
 
 pub fn surfaceInit(surface: *apprt.Surface) !void {
-    // Store HWND for device creation in threadEnter (must be on renderer thread).
     if (comptime builtin.os.tag != .windows) return;
     stored_hwnd = @ptrCast(surface.platform.windows.hwnd);
 }
@@ -113,8 +116,6 @@ pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void 
 
 pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     _ = surface;
-    // Create D3D11 device on renderer thread. The immediate context
-    // must only be used from this thread.
     const hwnd = stored_hwnd orelse return;
     const w32 = struct {
         const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
@@ -122,12 +123,10 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     };
     var rect: w32.RECT = undefined;
     _ = w32.GetClientRect(hwnd, &rect);
-    const w: u32 = @intCast(rect.right - rect.left);
-    const h: u32 = @intCast(rect.bottom - rect.top);
+    const w: u32 = @intCast(@max(rect.right - rect.left, 1));
+    const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 
-    const dev = dx.dx_create(hwnd, w, h) orelse {
-        return error.DirectXFailed;
-    };
+    const dev = dx.dx_create(hwnd, w, h) orelse return;
     const self_mut: *DirectX = @constCast(self);
     self_mut.device = dev;
     current_device = dev;
@@ -154,6 +153,7 @@ pub fn drawFrameStart(self: *DirectX) void {
     dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
 }
 
+
 pub fn drawFrameEnd(self: *DirectX) void {
     _ = self;
     const dev = current_device orelse return;
@@ -163,26 +163,10 @@ pub fn drawFrameEnd(self: *DirectX) void {
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
     _ = self;
     const dev = current_device orelse return .{ .width = 960, .height = 640 };
-    const hwnd = stored_hwnd orelse return .{ .width = 960, .height = 640 };
-
-    // Get actual window client size
-    const w32 = struct {
-        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
-        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
-    };
-    var rect: w32.RECT = undefined;
-    _ = w32.GetClientRect(hwnd, &rect);
-    const w: u32 = @intCast(@max(rect.right - rect.left, 1));
-    const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
-
-    // Resize swap chain if window size changed
-    var bbw: u32 = 0;
-    var bbh: u32 = 0;
-    dx.dx_get_backbuffer_size(dev, &bbw, &bbh);
-    if (bbw != w or bbh != h) {
-        dx.dx_resize(dev, w, h);
-    }
-
+    var w: u32 = 0;
+    var h: u32 = 0;
+    dx.dx_get_backbuffer_size(dev, &w, &h);
+    if (w == 0 or h == 0) return .{ .width = 960, .height = 640 };
     return .{ .width = w, .height = h };
 }
 
@@ -217,7 +201,12 @@ pub fn beginFrame(self: *DirectX, renderer: *Renderer, target: *Target) !Frame {
     dx.dx_bind_backbuffer(dev);
     dx.dx_set_blend_enabled(dev, false);
     dx.dx_ensure_default_sampler(dev);
-    dx.dx_clear(dev, 1.0, 0.0, 0.0, 1.0); // RED = build applied
+    dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
+    // Log that beginFrame ran (means needs_redraw=true)
+    const k32 = struct {
+        extern "kernel32" fn OutputDebugStringA([*:0]const u8) callconv(.winapi) void;
+    };
+    k32.OutputDebugStringA("beginFrame: needs_redraw=true\n");
     return Frame.begin(renderer, target);
 }
 
@@ -227,8 +216,6 @@ pub fn present(self: *DirectX, target: Target) !void {
 
 pub fn presentLastTarget(self: *DirectX) !void {
     _ = self;
-    // No-op: DWM keeps showing the last presented frame.
-    // With DXGI_SWAP_EFFECT_DISCARD, we can't re-present stale content.
 }
 
 pub fn initAtlasTexture(self: *const DirectX, atlas: anytype) !Texture {
