@@ -132,10 +132,11 @@ pub fn step(self: *Self, s: Step) void {
         .triangle => 4, // D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST
         .triangle_strip => 5, // D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP
     };
-    if (s.draw.instance_count > 1) {
+    if (s.draw.instance_count > 1 or has_vertex_data) {
+        const ic: u32 = @intCast(@max(s.draw.instance_count, 1));
         dx.dx_draw_instanced(dev,
             @intCast(s.draw.vertex_count),
-            @intCast(s.draw.instance_count),
+            ic,
             0, 0, topology);
     } else {
         dx.dx_draw(dev, @intCast(s.draw.vertex_count), 0, topology);
