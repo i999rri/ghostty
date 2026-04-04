@@ -178,3 +178,167 @@ pub const Shaders = struct {
         self.defunct = true;
     }
 };
+
+// -----------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------
+
+test "Uniforms cbuffer layout matches HLSL" {
+    // These offsets must match common.hlsl cbuffer Globals : register(b1).
+    // Any mismatch silently breaks all rendering.
+    const testing = std.testing;
+
+    // Total size (must be 16-byte aligned for constant buffers)
+    try testing.expectEqual(@as(usize, 144), @sizeOf(Uniforms));
+    try testing.expect(@sizeOf(Uniforms) % 16 == 0);
+
+    // projection_matrix: float4x4 at offset 0 (64 bytes)
+    try testing.expectEqual(@as(usize, 0), @offsetOf(Uniforms, "projection_matrix"));
+    try testing.expectEqual(@as(usize, 64), @sizeOf(math.Mat));
+
+    // screen_size: float2 at offset 64
+    try testing.expectEqual(@as(usize, 64), @offsetOf(Uniforms, "screen_size"));
+
+    // cell_size: float2 at offset 72
+    try testing.expectEqual(@as(usize, 72), @offsetOf(Uniforms, "cell_size"));
+
+    // grid_size_packed_2u16: uint at offset 80
+    try testing.expectEqual(@as(usize, 80), @offsetOf(Uniforms, "grid_size"));
+
+    // grid_padding: float4 at offset 96 (16-byte aligned, 12 bytes padding after grid_size)
+    try testing.expectEqual(@as(usize, 96), @offsetOf(Uniforms, "grid_padding"));
+
+    // padding_extend: uint at offset 112
+    try testing.expectEqual(@as(usize, 112), @offsetOf(Uniforms, "padding_extend"));
+
+    // min_contrast: float at offset 116
+    try testing.expectEqual(@as(usize, 116), @offsetOf(Uniforms, "min_contrast"));
+
+    // cursor_pos_packed_2u16: uint at offset 120
+    try testing.expectEqual(@as(usize, 120), @offsetOf(Uniforms, "cursor_pos"));
+
+    // cursor_color_packed_4u8: uint at offset 124
+    try testing.expectEqual(@as(usize, 124), @offsetOf(Uniforms, "cursor_color"));
+
+    // bg_color_packed_4u8: uint at offset 128
+    try testing.expectEqual(@as(usize, 128), @offsetOf(Uniforms, "bg_color"));
+
+    // bools: uint at offset 132
+    try testing.expectEqual(@as(usize, 132), @offsetOf(Uniforms, "bools"));
+}
+
+test "Uniforms packed structs are u32" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(usize, 4), @sizeOf(Uniforms.Bools));
+    try testing.expectEqual(@as(usize, 4), @sizeOf(Uniforms.PaddingExtend));
+}
+
+test "CellText layout matches D3D11 input layout" {
+    // Must match dx_create_cell_text_pipeline input element desc offsets.
+    const testing = std.testing;
+
+    try testing.expectEqual(@as(usize, 32), @sizeOf(CellText));
+
+    // GLYPH_POS: R32G32_UINT at offset 0
+    try testing.expectEqual(@as(usize, 0), @offsetOf(CellText, "glyph_pos"));
+    // GLYPH_SIZE: R32G32_UINT at offset 8
+    try testing.expectEqual(@as(usize, 8), @offsetOf(CellText, "glyph_size"));
+    // BEARINGS: R16G16_SINT at offset 16
+    try testing.expectEqual(@as(usize, 16), @offsetOf(CellText, "bearings"));
+    // GRID_POS: R16G16_UINT at offset 20
+    try testing.expectEqual(@as(usize, 20), @offsetOf(CellText, "grid_pos"));
+    // COLOR: R8G8B8A8_UINT at offset 24
+    try testing.expectEqual(@as(usize, 24), @offsetOf(CellText, "color"));
+    // ATLAS: R8_UINT at offset 28
+    try testing.expectEqual(@as(usize, 28), @offsetOf(CellText, "atlas"));
+    // GLYPH_BOOLS: R8_UINT at offset 29
+    try testing.expectEqual(@as(usize, 29), @offsetOf(CellText, "bools"));
+}
+
+test "CellBg is 4 bytes (packed RGBA)" {
+    try std.testing.expectEqual(@as(usize, 4), @sizeOf(CellBg));
+}
+
+test "Image layout matches D3D11 input layout" {
+    const testing = std.testing;
+
+    // extern struct with align(16) on source_rect pads to 48
+    try testing.expectEqual(@as(usize, 48), @sizeOf(Image));
+
+    // GRID_POS: R32G32_FLOAT at offset 0
+    try testing.expectEqual(@as(usize, 0), @offsetOf(Image, "grid_pos"));
+    // CELL_OFFSET: R32G32_FLOAT at offset 8
+    try testing.expectEqual(@as(usize, 8), @offsetOf(Image, "cell_offset"));
+    // SOURCE_RECT: R32G32B32A32_FLOAT at offset 16
+    try testing.expectEqual(@as(usize, 16), @offsetOf(Image, "source_rect"));
+    // DEST_SIZE: R32G32_FLOAT at offset 32
+    try testing.expectEqual(@as(usize, 32), @offsetOf(Image, "dest_size"));
+}
+
+test "BgImage layout matches D3D11 input layout" {
+    const testing = std.testing;
+
+    try testing.expectEqual(@as(usize, 8), @sizeOf(BgImage));
+
+    // OPACITY: R32_FLOAT at offset 0
+    try testing.expectEqual(@as(usize, 0), @offsetOf(BgImage, "opacity"));
+    // INFO: R8_UINT at offset 4
+    try testing.expectEqual(@as(usize, 4), @offsetOf(BgImage, "info"));
+}
+
+test "BgImage.Info packed bit layout" {
+    const testing = std.testing;
+
+    try testing.expectEqual(@as(usize, 1), @sizeOf(BgImage.Info));
+
+    // cover fit, center position, no repeat
+    const info = BgImage.Info{
+        .position = .mc,
+        .fit = .cover,
+        .repeat = false,
+    };
+    const byte: u8 = @bitCast(info);
+    // position(4bits) = mc(4), fit(2bits) = cover(1), repeat(1bit) = 0
+    // Bit layout: _padding(1) | repeat(1) | fit(2) | position(4)
+    try testing.expectEqual(@as(u4, 4), @intFromEnum(BgImage.Info.Position.mc));
+    try testing.expectEqual(@as(u2, 1), @intFromEnum(BgImage.Info.Fit.cover));
+    // byte = 0b0_0_01_0100 = 0x14
+    try testing.expectEqual(@as(u8, 0x14), byte);
+}
+
+test "HLSL sources are non-empty and contain expected keywords" {
+    const testing = std.testing;
+
+    // All shader sources must be non-trivial
+    try testing.expect(hlsl_common.len > 50);
+    try testing.expect(hlsl_bg_color.len > hlsl_common.len);
+    try testing.expect(hlsl_cell_bg.len > hlsl_common.len);
+    try testing.expect(hlsl_cell_text.len > hlsl_common.len);
+    try testing.expect(hlsl_image.len > hlsl_common.len);
+    try testing.expect(hlsl_bg_image.len > hlsl_common.len);
+
+    // Common must contain the cbuffer declaration
+    try testing.expect(std.mem.indexOf(u8, hlsl_common, "cbuffer Globals") != null);
+    try testing.expect(std.mem.indexOf(u8, hlsl_common, "register(b1)") != null);
+
+    // Each shader must have vs_main and ps_main entry points
+    try testing.expect(std.mem.indexOf(u8, hlsl_bg_color, "vs_main") != null);
+    try testing.expect(std.mem.indexOf(u8, hlsl_bg_color, "ps_main") != null);
+    try testing.expect(std.mem.indexOf(u8, hlsl_cell_text, "vs_main") != null);
+    try testing.expect(std.mem.indexOf(u8, hlsl_cell_text, "ps_main") != null);
+}
+
+test "Uniforms Bools bit flags match HLSL constants" {
+    // common.hlsl: CURSOR_WIDE=1, USE_DISPLAY_P3=2, USE_LINEAR_BLENDING=4, USE_LINEAR_CORRECTION=8
+    const testing = std.testing;
+
+    const cursor_wide: Uniforms.Bools = .{ .cursor_wide = true, .use_display_p3 = false, .use_linear_blending = false };
+    const display_p3: Uniforms.Bools = .{ .cursor_wide = false, .use_display_p3 = true, .use_linear_blending = false };
+    const linear_blend: Uniforms.Bools = .{ .cursor_wide = false, .use_display_p3 = false, .use_linear_blending = true };
+    const linear_correct: Uniforms.Bools = .{ .cursor_wide = false, .use_display_p3 = false, .use_linear_blending = false, .use_linear_correction = true };
+
+    try testing.expectEqual(@as(u32, 1), @as(u32, @bitCast(cursor_wide)));
+    try testing.expectEqual(@as(u32, 2), @as(u32, @bitCast(display_p3)));
+    try testing.expectEqual(@as(u32, 4), @as(u32, @bitCast(linear_blend)));
+    try testing.expectEqual(@as(u32, 8), @as(u32, @bitCast(linear_correct)));
+}
