@@ -177,7 +177,6 @@ pub fn drawFrameStart(self: *DirectX) void {
     dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
 }
 
-
 pub fn drawFrameEnd(self: *DirectX) void {
     _ = self;
     const dev = current_device orelse return;
@@ -232,15 +231,6 @@ pub fn initTarget(self: *const DirectX, width: usize, height: usize) !Target {
 
 pub fn beginFrame(self: *DirectX, renderer: *Renderer, target: *Target) !Frame {
     _ = self;
-    const dev = current_device orelse return Frame.begin(renderer, target);
-    var w: u32 = 0;
-    var h: u32 = 0;
-    dx.dx_get_backbuffer_size(dev, &w, &h);
-    dx.dx_set_viewport(dev, w, h);
-    dx.dx_bind_backbuffer(dev);
-    dx.dx_set_blend_enabled(dev, false);
-    dx.dx_ensure_default_sampler(dev);
-    dx.dx_clear(dev, 0.0, 0.0, 0.0, 1.0);
     return Frame.begin(renderer, target);
 }
 
