@@ -93,5 +93,10 @@ pub fn getHandle(self: Self, device: ?*dx.DxDevice) ?*dx.DxPipeline {
 }
 
 pub fn deinit(self: *const Self) void {
-    _ = self;
+    if (self.id > 0 and self.id < MAX_PIPELINES) {
+        if (handles[self.id]) |h| {
+            dx.dx_destroy_pipeline(h);
+            handles[self.id] = null;
+        }
+    }
 }
