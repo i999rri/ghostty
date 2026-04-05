@@ -298,27 +298,9 @@ fn threadMain_(self: *Thread) !void {
             // Poll xev for stop signal (non-blocking)
             _ = self.loop.run(.no_wait) catch |err|
                 log.err("error in xev poll err={}", .{err});
-            self.drainMailbox() catch |err|
-                log.err("error draining mailbox err={}", .{err});
-            if (self.flags.cursor_blink_reset) {
-                self.flags.cursor_blink_reset = false;
-                last_blink = GetTickCount64();
-            }
-
-            self.renderer.updateFrame(
-                self.state,
-                self.flags.cursor_blink_visible,
-            ) catch |err|
-                log.warn("error rendering err={}", .{err});
 
             const now = GetTickCount64();
-            if (now - last_blink >= cursorBlinkInterval()) {
-                self.flags.cursor_blink_visible = !self.flags.cursor_blink_visible;
-                last_blink = now;
-            }
-
-            self.renderer.drawFrame(false) catch |err|
-                log.warn("error drawing err={}", .{err});
+            self.nativeRenderCycle(&last_blink, now);
 
             // Adaptive sleep: 4ms (~240fps) when focused, 16ms (~60fps) when not
             Sleep(if (self.flags.focused) 4 else 16);
@@ -585,6 +567,31 @@ fn drawFrame(self: *Thread, now: bool) void {
         self.renderer.drawFrame(false) catch |err|
             log.warn("error drawing err={}", .{err});
     }
+}
+
+/// Perform one render cycle for the native render loop.
+/// Drains mailbox, updates frame, toggles cursor blink, and draws.
+fn nativeRenderCycle(self: *Thread, last_blink: *u64, now: u64) void {
+    self.drainMailbox() catch |err|
+        log.err("error draining mailbox err={}", .{err});
+
+    if (self.flags.cursor_blink_reset) {
+        self.flags.cursor_blink_reset = false;
+        last_blink.* = now;
+    }
+
+    self.renderer.updateFrame(
+        self.state,
+        self.flags.cursor_blink_visible,
+    ) catch |err|
+        log.warn("error rendering err={}", .{err});
+
+    if (now - last_blink.* >= cursorBlinkInterval()) {
+        self.flags.cursor_blink_visible = !self.flags.cursor_blink_visible;
+        last_blink.* = now;
+    }
+
+    self.drawFrame(false);
 }
 
 fn wakeupCallback(
