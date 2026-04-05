@@ -1,6 +1,7 @@
 const std = @import("std");
 const DirectX = @import("../DirectX.zig");
 const dx = DirectX.dx;
+const log = std.log.scoped(.directx);
 
 const Self = @This();
 
@@ -48,6 +49,7 @@ pub fn init(opts: Options, width: usize, height: usize, data: ?[]const u8) Error
     if (dev != null and width > 0 and height > 0) {
         const data_ptr: ?*const anyopaque = if (data) |d| @ptrCast(d.ptr) else null;
         handle = dx.dx_create_texture(dev, @intCast(width), @intCast(height), dxgiFormat(opts.format), data_ptr);
+        if (handle == null) log.err("dx_create_texture failed: {}x{}", .{ width, height });
     }
 
     return .{

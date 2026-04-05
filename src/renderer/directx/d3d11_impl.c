@@ -144,6 +144,8 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     return dev;
 }
 
+static ID3D11SamplerState* default_sampler = NULL;
+
 void dx_destroy(DxDevice* dev) {
     if (!dev) return;
     if (default_sampler) { ID3D11SamplerState_Release(default_sampler); default_sampler = NULL; }
@@ -217,7 +219,6 @@ void dx_clear_shader_resources(DxDevice* dev) {
     ID3D11DeviceContext_PSSetShaderResources(dev->context, 0, 8, nullSRVs);
 }
 
-static ID3D11SamplerState* default_sampler = NULL;
 void dx_ensure_default_sampler(DxDevice* dev) {
     if (!dev || default_sampler) return;
     D3D11_SAMPLER_DESC sd = {0};
