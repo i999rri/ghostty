@@ -314,8 +314,8 @@ pub fn surfaceSize(self: *const OpenGL) !struct { width: u32, height: u32 } {
             if (hwnd) |w| {
                 var rect: RECT = undefined;
                 if (win32.GetClientRect(w, &rect) != 0) {
-                    const width: u32 = @intCast(rect.right - rect.left);
-                    const height: u32 = @intCast(rect.bottom - rect.top);
+                    const width: u32 = @intCast(@max(rect.right - rect.left, 1));
+                    const height: u32 = @intCast(@max(rect.bottom - rect.top, 1));
                     gl.glad.context.Viewport.?(0, 0, @intCast(width), @intCast(height));
                     return .{ .width = width, .height = height };
                 }
