@@ -107,6 +107,9 @@ flags: packed struct {
     /// This is true when the view is focused. This defaults to true
     /// and it is up to the apprt to set the correct value.
     focused: bool = true,
+
+    /// Set by drainMailbox on reset_cursor_blink; consumed by native render loop
+    cursor_blink_reset: bool = false,
 } = .{},
 
 pub const DerivedConfig = struct {
@@ -292,6 +295,10 @@ fn threadMain_(self: *Thread) !void {
             // Poll xev for stop signal (non-blocking)
             _ = self.loop.run(.no_wait) catch {};
             self.drainMailbox() catch {};
+            if (self.flags.cursor_blink_reset) {
+                self.flags.cursor_blink_reset = false;
+                last_blink = w32.GetTickCount64();
+            }
 
             self.renderer.updateFrame(
                 self.state,
@@ -477,6 +484,7 @@ fn drainMailbox(self: *Thread) !void {
 
             .reset_cursor_blink => {
                 self.flags.cursor_blink_visible = true;
+                self.flags.cursor_blink_reset = true;
                 if (self.cursor_c.state() == .active) {
                     self.cursor_h.reset(
                         &self.loop,

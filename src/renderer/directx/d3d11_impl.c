@@ -8,6 +8,7 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -49,35 +50,60 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     if (!dev) return NULL;
     dev->hwnd = (HWND)hwnd;
 
-    DXGI_SWAP_CHAIN_DESC scd = {0};
-    scd.BufferCount = 2;
-    scd.BufferDesc.Width = width;
-    scd.BufferDesc.Height = height;
-    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scd.BufferDesc.RefreshRate.Numerator = 0;
-    scd.BufferDesc.RefreshRate.Denominator = 1;
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.OutputWindow = dev->hwnd;
-    scd.SampleDesc.Count = 1;
-    scd.Windowed = TRUE;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-
     D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
     UINT flags = 0;
 #ifndef NDEBUG
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+    // Create device first (without swap chain)
+    HRESULT hr = D3D11CreateDevice(
         NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags,
         feature_levels, 1, D3D11_SDK_VERSION,
-        &scd, &dev->swap_chain, &dev->device, &dev->feature_level, &dev->context);
+        &dev->device, &dev->feature_level, &dev->context);
 
     if (FAILED(hr)) {
-        OutputDebugStringA("D3D11: CreateDeviceAndSwapChain FAILED\n");
+        OutputDebugStringA("D3D11: CreateDevice FAILED\n");
         free(dev);
         return NULL;
     }
+
+    // Create swap chain via DXGI 1.2 for DXGI_SCALING_NONE (prevents DWM stretching on resize)
+    IDXGIDevice* dxgi_device = NULL;
+    IDXGIAdapter* adapter = NULL;
+    IDXGIFactory2* factory = NULL;
+    ID3D11Device_QueryInterface(dev->device, &IID_IDXGIDevice, (void**)&dxgi_device);
+    IDXGIDevice_GetAdapter(dxgi_device, &adapter);
+    IDXGIAdapter_GetParent(adapter, &IID_IDXGIFactory2, (void**)&factory);
+
+    DXGI_SWAP_CHAIN_DESC1 scd = {0};
+    scd.Width = width;
+    scd.Height = height;
+    scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.SampleDesc.Count = 1;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.BufferCount = 2;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    scd.Scaling = DXGI_SCALING_NONE;
+
+    IDXGISwapChain1* swap_chain1 = NULL;
+    hr = IDXGIFactory2_CreateSwapChainForHwnd(factory, (IUnknown*)dev->device, dev->hwnd, &scd, NULL, NULL, &swap_chain1);
+
+    IDXGIFactory2_Release(factory);
+    IDXGIAdapter_Release(adapter);
+    IDXGIDevice_Release(dxgi_device);
+
+    if (FAILED(hr) || !swap_chain1) {
+        OutputDebugStringA("D3D11: CreateSwapChainForHwnd FAILED\n");
+        ID3D11DeviceContext_Release(dev->context);
+        ID3D11Device_Release(dev->device);
+        free(dev);
+        return NULL;
+    }
+
+    // Get IDXGISwapChain from IDXGISwapChain1
+    IDXGISwapChain1_QueryInterface(swap_chain1, &IID_IDXGISwapChain, (void**)&dev->swap_chain);
+    IDXGISwapChain1_Release(swap_chain1);
     OutputDebugStringA("D3D11: Device created successfully\n");
 
     dx_create_backbuffer_rtv(dev);
