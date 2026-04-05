@@ -146,6 +146,7 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
 
 void dx_destroy(DxDevice* dev) {
     if (!dev) return;
+    if (default_sampler) { ID3D11SamplerState_Release(default_sampler); default_sampler = NULL; }
     if (dev->rasterizer_state) ID3D11RasterizerState_Release(dev->rasterizer_state);
     if (dev->blend_off) ID3D11BlendState_Release(dev->blend_off);
     if (dev->blend_on) ID3D11BlendState_Release(dev->blend_on);
