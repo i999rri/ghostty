@@ -10,6 +10,7 @@ const apprt = @import("../apprt.zig");
 const font = @import("../font/main.zig");
 const configpkg = @import("../config.zig");
 const rendererpkg = @import("../renderer.zig");
+const windows = @import("../os/windows.zig");
 const Renderer = rendererpkg.GenericRenderer(DirectX);
 
 pub const GraphicsAPI = DirectX;
@@ -74,12 +75,8 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
     stored_hwnd = hwnd;
 
     // Set initial window size (main thread, safe to call GetClientRect here)
-    const w32 = struct {
-        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
-        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
-    };
-    var rect: w32.RECT = undefined;
-    _ = w32.GetClientRect(hwnd, &rect);
+    var rect: windows.exp.RECT = undefined;
+    _ = windows.exp.user32.GetClientRect(hwnd, &rect);
     dx.dx_set_window_size(
         @intCast(@max(rect.right - rect.left, 1)),
         @intCast(@max(rect.bottom - rect.top, 1)),
@@ -94,12 +91,8 @@ pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void 
 pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     _ = surface;
     const hwnd = stored_hwnd orelse return;
-    const w32 = struct {
-        const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
-        extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
-    };
-    var rect: w32.RECT = undefined;
-    _ = w32.GetClientRect(hwnd, &rect);
+    var rect: windows.exp.RECT = undefined;
+    _ = windows.exp.user32.GetClientRect(hwnd, &rect);
     const w: u32 = @intCast(@max(rect.right - rect.left, 1));
     const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 

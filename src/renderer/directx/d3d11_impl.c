@@ -104,7 +104,9 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     // Get IDXGISwapChain from IDXGISwapChain1
     IDXGISwapChain1_QueryInterface(swap_chain1, &IID_IDXGISwapChain, (void**)&dev->swap_chain);
     IDXGISwapChain1_Release(swap_chain1);
+#ifndef NDEBUG
     OutputDebugStringA("D3D11: Device created successfully\n");
+#endif
 
     dx_create_backbuffer_rtv(dev);
     dev->bb_width = width;

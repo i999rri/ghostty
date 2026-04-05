@@ -99,6 +99,7 @@ pub const exp = struct {
             lpStartupInfo: *windows.STARTUPINFOW,
             lpProcessInformation: *windows.PROCESS_INFORMATION,
         ) callconv(.winapi) windows.BOOL;
+        pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
         /// https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getcomputernamea
         pub extern "kernel32" fn GetComputerNameA(
             lpBuffer: windows.LPSTR,
@@ -130,4 +131,15 @@ pub const exp = struct {
     }
 
     pub const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = ProcThreadAttributeValue(.ProcThreadAttributePseudoConsole, false, true, false);
+
+    pub const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+
+    pub const user32 = struct {
+        pub extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
+    };
+
+    pub const winmm = struct {
+        pub extern "winmm" fn timeBeginPeriod(u32) callconv(.winapi) u32;
+        pub extern "winmm" fn timeEndPeriod(u32) callconv(.winapi) u32;
+    };
 };

@@ -280,16 +280,15 @@ fn threadMain_(self: *Thread) !void {
         RendererType.API.stop_requested.store(false, .monotonic);
         self.stop.wait(&self.loop, &self.stop_c, Thread, self, nativeStopCallback);
 
-        const w32 = struct {
-            extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
-            extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
-            extern "winmm" fn timeBeginPeriod(u32) callconv(.winapi) u32;
-            extern "winmm" fn timeEndPeriod(u32) callconv(.winapi) u32;
-        };
+        const win = @import("../os/windows.zig");
+        const Sleep = std.os.windows.kernel32.Sleep;
+        const GetTickCount64 = win.exp.kernel32.GetTickCount64;
+        const timeBeginPeriod = win.exp.winmm.timeBeginPeriod;
+        const timeEndPeriod = win.exp.winmm.timeEndPeriod;
         // Set timer resolution to 1ms for accurate Sleep
-        _ = w32.timeBeginPeriod(1);
-        defer _ = w32.timeEndPeriod(1);
-        var last_blink: u64 = w32.GetTickCount64();
+        _ = timeBeginPeriod(1);
+        defer _ = timeEndPeriod(1);
+        var last_blink: u64 = GetTickCount64();
 
         while (!RendererType.API.stop_requested.load(.monotonic)) {
             // Poll xev for stop signal (non-blocking)
@@ -297,7 +296,7 @@ fn threadMain_(self: *Thread) !void {
             self.drainMailbox() catch {};
             if (self.flags.cursor_blink_reset) {
                 self.flags.cursor_blink_reset = false;
-                last_blink = w32.GetTickCount64();
+                last_blink = GetTickCount64();
             }
 
             self.renderer.updateFrame(
@@ -305,7 +304,7 @@ fn threadMain_(self: *Thread) !void {
                 self.flags.cursor_blink_visible,
             ) catch {};
 
-            const now = w32.GetTickCount64();
+            const now = GetTickCount64();
             if (now - last_blink >= cursorBlinkInterval()) {
                 self.flags.cursor_blink_visible = !self.flags.cursor_blink_visible;
                 last_blink = now;
@@ -314,7 +313,7 @@ fn threadMain_(self: *Thread) !void {
             self.renderer.drawFrame(false) catch {};
 
             // Adaptive sleep: 4ms (~240fps) when focused, 16ms (~60fps) when not
-            w32.Sleep(if (self.flags.focused) 4 else 16);
+            Sleep(if (self.flags.focused) 4 else 16);
         }
     } else {
         _ = try self.loop.run(.until_done);
