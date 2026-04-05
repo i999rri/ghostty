@@ -290,8 +290,13 @@ fn threadMain_(self: *Thread) !void {
         const k32 = win.exp.kernel32;
         const GetTickCount64 = k32.GetTickCount64;
 
-        // Use high-resolution waitable timer (Windows 10 1803+) to avoid
-        // timeBeginPeriod(1) which affects system-wide timer resolution.
+        // Use high-resolution waitable timer to avoid timeBeginPeriod(1)
+        // which changes the system-wide timer resolution (affects all processes,
+        // increases power consumption on laptops).
+        //
+        // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION requires Windows 10 1803+.
+        // On older versions, CreateWaitableTimerExW returns null because the
+        // flag is unrecognized, and we fall back to timeBeginPeriod(1) + Sleep.
         const timer = k32.CreateWaitableTimerExW(
             null,
             null,
