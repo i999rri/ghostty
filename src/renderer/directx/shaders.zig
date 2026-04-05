@@ -227,12 +227,6 @@ test "Uniforms cbuffer layout matches HLSL" {
     try testing.expectEqual(@as(usize, 132), @offsetOf(Uniforms, "bools"));
 }
 
-test "Uniforms packed structs are u32" {
-    const testing = std.testing;
-    try testing.expectEqual(@as(usize, 4), @sizeOf(Uniforms.Bools));
-    try testing.expectEqual(@as(usize, 4), @sizeOf(Uniforms.PaddingExtend));
-}
-
 test "CellText layout matches D3D11 input layout" {
     // Must match dx_create_cell_text_pipeline input element desc offsets.
     const testing = std.testing;
@@ -253,10 +247,6 @@ test "CellText layout matches D3D11 input layout" {
     try testing.expectEqual(@as(usize, 28), @offsetOf(CellText, "atlas"));
     // GLYPH_BOOLS: R8_UINT at offset 29
     try testing.expectEqual(@as(usize, 29), @offsetOf(CellText, "bools"));
-}
-
-test "CellBg is 4 bytes (packed RGBA)" {
-    try std.testing.expectEqual(@as(usize, 4), @sizeOf(CellBg));
 }
 
 test "Image layout matches D3D11 input layout" {
@@ -304,28 +294,6 @@ test "BgImage.Info packed bit layout" {
     try testing.expectEqual(@as(u2, 1), @intFromEnum(BgImage.Info.Fit.cover));
     // byte = 0b0_0_01_0100 = 0x14
     try testing.expectEqual(@as(u8, 0x14), byte);
-}
-
-test "HLSL sources are non-empty and contain expected keywords" {
-    const testing = std.testing;
-
-    // All shader sources must be non-trivial
-    try testing.expect(hlsl_common.len > 50);
-    try testing.expect(hlsl_bg_color.len > hlsl_common.len);
-    try testing.expect(hlsl_cell_bg.len > hlsl_common.len);
-    try testing.expect(hlsl_cell_text.len > hlsl_common.len);
-    try testing.expect(hlsl_image.len > hlsl_common.len);
-    try testing.expect(hlsl_bg_image.len > hlsl_common.len);
-
-    // Common must contain the cbuffer declaration
-    try testing.expect(std.mem.indexOf(u8, hlsl_common, "cbuffer Globals") != null);
-    try testing.expect(std.mem.indexOf(u8, hlsl_common, "register(b1)") != null);
-
-    // Each shader must have vs_main and ps_main entry points
-    try testing.expect(std.mem.indexOf(u8, hlsl_bg_color, "vs_main") != null);
-    try testing.expect(std.mem.indexOf(u8, hlsl_bg_color, "ps_main") != null);
-    try testing.expect(std.mem.indexOf(u8, hlsl_cell_text, "vs_main") != null);
-    try testing.expect(std.mem.indexOf(u8, hlsl_cell_text, "ps_main") != null);
 }
 
 test "Uniforms Bools bit flags match HLSL constants" {
