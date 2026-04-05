@@ -19,6 +19,15 @@ const log = std.log.scoped(.renderer_thread);
 const DRAW_INTERVAL = 8; // 120 FPS
 const CURSOR_BLINK_INTERVAL = 600;
 
+/// Whether to use a native render loop instead of xev's event loop.
+/// DirectX on Windows requires this because xev's IOCP is incompatible with D3D11.
+const use_native_loop = blk: {
+    const RendererType = rendererpkg.Renderer;
+    break :blk @hasDecl(RendererType, "API") and
+        @hasDecl(RendererType.API, "native_render_loop") and
+        RendererType.API.native_render_loop;
+};
+
 /// Whether calls to `drawFrame` must be done from the app thread.
 ///
 /// If this is `true` then we send a `redraw_surface` message to the apprt
@@ -240,11 +249,6 @@ fn threadMain_(self: *Thread) !void {
 
     // DirectX: xev's IOCP loop stalls after D3D11 device creation.
     // Use a simple native render loop instead.
-    const use_native_loop = comptime blk: {
-        const RendererType = rendererpkg.Renderer;
-        break :blk @hasDecl(RendererType, "API") and @hasDecl(RendererType.API, "native_render_loop") and RendererType.API.native_render_loop;
-    };
-
     if (use_native_loop) {
         const RendererType = rendererpkg.Renderer;
         RendererType.API.stop_requested.store(false, .seq_cst);
@@ -451,36 +455,42 @@ fn drainMailbox(self: *Thread) !void {
                 // Set it on the renderer
                 try self.renderer.setFocus(v);
 
-                // We always resync our draw timer (may disable it)
-                self.syncDrawTimer();
-
-                if (!v) {
-                    // If we're not focused, then we stop the cursor blink
-                    if (self.cursor_c.state() == .active and
-                        self.cursor_c_cancel.state() == .dead)
-                    {
-                        self.cursor_h.cancel(
-                            &self.loop,
-                            &self.cursor_c,
-                            &self.cursor_c_cancel,
-                            void,
-                            null,
-                            cursorCancelCallback,
-                        );
-                    }
+                if (use_native_loop) {
+                    // Native loop: cursor blink is managed by the poll loop.
+                    // Just show cursor immediately on focus gain.
+                    if (v) self.flags.cursor_blink_visible = true;
                 } else {
-                    // If we're focused, we immediately show the cursor again
-                    // and then restart the timer.
-                    if (self.cursor_c.state() != .active) {
-                        self.flags.cursor_blink_visible = true;
-                        self.cursor_h.run(
-                            &self.loop,
-                            &self.cursor_c,
-                            cursorBlinkInterval(),
-                            Thread,
-                            self,
-                            cursorTimerCallback,
-                        );
+                    // xev: resync draw timer and manage cursor timer
+                    self.syncDrawTimer();
+
+                    if (!v) {
+                        // If we're not focused, then we stop the cursor blink
+                        if (self.cursor_c.state() == .active and
+                            self.cursor_c_cancel.state() == .dead)
+                        {
+                            self.cursor_h.cancel(
+                                &self.loop,
+                                &self.cursor_c,
+                                &self.cursor_c_cancel,
+                                void,
+                                null,
+                                cursorCancelCallback,
+                            );
+                        }
+                    } else {
+                        // If we're focused, we immediately show the cursor again
+                        // and then restart the timer.
+                        if (self.cursor_c.state() != .active) {
+                            self.flags.cursor_blink_visible = true;
+                            self.cursor_h.run(
+                                &self.loop,
+                                &self.cursor_c,
+                                cursorBlinkInterval(),
+                                Thread,
+                                self,
+                                cursorTimerCallback,
+                            );
+                        }
                     }
                 }
             },
@@ -488,16 +498,18 @@ fn drainMailbox(self: *Thread) !void {
             .reset_cursor_blink => {
                 self.flags.cursor_blink_visible = true;
                 self.flags.cursor_blink_reset = true;
-                if (self.cursor_c.state() == .active) {
-                    self.cursor_h.reset(
-                        &self.loop,
-                        &self.cursor_c,
-                        &self.cursor_c_cancel,
-                        cursorBlinkInterval(),
-                        Thread,
-                        self,
-                        cursorTimerCallback,
-                    );
+                if (!use_native_loop) {
+                    if (self.cursor_c.state() == .active) {
+                        self.cursor_h.reset(
+                            &self.loop,
+                            &self.cursor_c,
+                            &self.cursor_c_cancel,
+                            cursorBlinkInterval(),
+                            Thread,
+                            self,
+                            cursorTimerCallback,
+                        );
+                    }
                 }
             },
 
@@ -514,9 +526,11 @@ fn drainMailbox(self: *Thread) !void {
                 try self.changeConfig(config.thread);
                 try self.renderer.changeConfig(config.impl);
 
-                // Stop and start the draw timer to capture the new
-                // hasAnimations value.
-                self.syncDrawTimer();
+                if (!use_native_loop) {
+                    // Stop and start the draw timer to capture the new
+                    // hasAnimations value.
+                    self.syncDrawTimer();
+                }
             },
 
             .search_viewport_matches => |v| {
