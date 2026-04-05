@@ -23,11 +23,11 @@ const D3D11_FILTER_MIN_MAG_MIP_LINEAR: u32 = 0x15;
 const D3D11_TEXTURE_ADDRESS_CLAMP: u32 = 3;
 const D3D11_TEXTURE_ADDRESS_WRAP: u32 = 1;
 
-dx_handle: ?*anyopaque = null,
+dx_handle: ?*dx.DxSampler = null,
 
 pub fn init(opts: Options) Error!Self {
     const dev = DirectX.current_device;
-    var handle: ?*anyopaque = null;
+    var handle: ?*dx.DxSampler = null;
 
     if (dev != null) {
         const filter: u32 = if (opts.min_filter == .nearest and opts.mag_filter == .nearest)

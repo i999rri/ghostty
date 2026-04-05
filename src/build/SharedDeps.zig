@@ -417,6 +417,14 @@ pub fn add(
     if (step.rootModuleTarget().os.tag == .windows) {
         step.addCSourceFiles(.{ .files = &.{"src/renderer/directx/d3d11_impl.c"} });
         step.addIncludePath(b.path("src/renderer/directx"));
+
+        // TranslateC for d3d11_impl.h — type-safe C imports (no @cImport)
+        const d3d11_c = b.addTranslateC(.{
+            .root_source_file = b.path("src/renderer/directx/d3d11_impl.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        step.root_module.addImport("d3d11-c", d3d11_c.createModule());
     }
     if (step.rootModuleTarget().os.tag == .linux) {
         step.addIncludePath(b.path("src/apprt/gtk"));

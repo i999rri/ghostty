@@ -39,11 +39,11 @@ fn dxgiFormat(format: Options.Format) u32 {
 
 width: usize,
 height: usize,
-dx_handle: ?*anyopaque = null,
+dx_handle: ?*dx.DxTexture = null,
 
 pub fn init(opts: Options, width: usize, height: usize, data: ?[]const u8) Error!Self {
     const dev = DirectX.current_device;
-    var handle: ?*anyopaque = null;
+    var handle: ?*dx.DxTexture = null;
 
     if (dev != null and width > 0 and height > 0) {
         const data_ptr: ?*const anyopaque = if (data) |d| @ptrCast(d.ptr) else null;

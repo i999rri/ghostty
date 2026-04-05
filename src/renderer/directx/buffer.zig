@@ -2,7 +2,7 @@ const std = @import("std");
 const DirectX = @import("../DirectX.zig");
 const dx = DirectX.dx;
 
-pub const RawBuffer = ?*anyopaque;
+pub const RawBuffer = ?*dx.DxBuffer;
 
 pub const Options = struct {
     target: Target = .array,

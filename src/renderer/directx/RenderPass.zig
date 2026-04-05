@@ -41,9 +41,9 @@ pub const Step = struct {
     };
 };
 
-device: ?*anyopaque,
+device: ?*dx.DxDevice,
 
-pub fn begin(device: ?*anyopaque, opts: Options) Self {
+pub fn begin(device: ?*dx.DxDevice, opts: Options) Self {
     _ = opts;
     return .{ .device = device };
 }

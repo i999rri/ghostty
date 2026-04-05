@@ -18,7 +18,7 @@ pub const Options = struct {
     };
 };
 
-handle: ?*anyopaque = null,
+handle: ?*dx.DxPipeline = null,
 blending_enabled: bool = true,
 id: u8 = 0,
 layout_type: LayoutType = .none,
@@ -35,7 +35,7 @@ const SourceEntry = struct {
 };
 
 var sources: [MAX_PIPELINES]SourceEntry = [_]SourceEntry{.{}} ** MAX_PIPELINES;
-var handles: [MAX_PIPELINES]?*anyopaque = [_]?*anyopaque{null} ** MAX_PIPELINES;
+var handles: [MAX_PIPELINES]?*dx.DxPipeline = [_]?*dx.DxPipeline{null} ** MAX_PIPELINES;
 var next_id: u8 = 1;
 
 pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
@@ -66,7 +66,7 @@ pub fn storeSource(self: *Self, vs_source: []const u8, ps_source: []const u8) vo
 }
 
 /// Get D3D11 pipeline handle. Compiles HLSL + creates shaders on first call (renderer thread).
-pub fn getHandle(self: Self, device: ?*anyopaque) ?*anyopaque {
+pub fn getHandle(self: Self, device: ?*dx.DxDevice) ?*dx.DxPipeline {
     if (self.id == 0 or self.id >= MAX_PIPELINES) return null;
     if (handles[self.id]) |h| return h;
     if (device == null) return null;
