@@ -1,6 +1,7 @@
 const std = @import("std");
 const DirectX = @import("../DirectX.zig");
 const dx = DirectX.dx;
+const log = std.log.scoped(.directx);
 
 const Self = @This();
 
@@ -41,6 +42,7 @@ pub fn init(opts: Options) Error!Self {
             D3D11_TEXTURE_ADDRESS_CLAMP;
 
         handle = dx.dx_create_sampler(dev, filter, address);
+        if (handle == null) log.err("dx_create_sampler failed", .{});
     }
 
     return .{ .dx_handle = handle };

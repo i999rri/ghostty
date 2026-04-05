@@ -1,6 +1,7 @@
 const std = @import("std");
 const DirectX = @import("../DirectX.zig");
 const dx = DirectX.dx;
+const log = std.log.scoped(.directx);
 
 pub const RawBuffer = ?*dx.DxBuffer;
 
@@ -92,6 +93,7 @@ pub fn Buffer(comptime T: type) type {
                     alloc_size,
                     @ptrCast(data.ptr),
                 );
+                if (self.buffer == null) log.err("dx_create_buffer failed: size={}", .{alloc_size});
                 self.len = alloc_len;
                 return;
             }
@@ -120,6 +122,7 @@ pub fn Buffer(comptime T: type) type {
                     alloc_size,
                     null,
                 );
+                if (self.buffer == null) log.err("dx_create_buffer failed: size={}", .{alloc_size});
             }
 
             if (self.buffer == null) return 0;
