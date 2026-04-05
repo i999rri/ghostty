@@ -287,13 +287,28 @@ fn threadMain_(self: *Thread) !void {
         self.stop.wait(&self.loop, &self.stop_c, Thread, self, nativeStopCallback);
 
         const win = @import("../os/windows.zig");
-        const Sleep = std.os.windows.kernel32.Sleep;
-        const GetTickCount64 = win.exp.kernel32.GetTickCount64;
-        const timeBeginPeriod = win.exp.winmm.timeBeginPeriod;
-        const timeEndPeriod = win.exp.winmm.timeEndPeriod;
-        // Set timer resolution to 1ms for accurate Sleep
-        _ = timeBeginPeriod(1);
-        defer _ = timeEndPeriod(1);
+        const k32 = win.exp.kernel32;
+        const GetTickCount64 = k32.GetTickCount64;
+
+        // Use high-resolution waitable timer (Windows 10 1803+) to avoid
+        // timeBeginPeriod(1) which affects system-wide timer resolution.
+        const timer = k32.CreateWaitableTimerExW(
+            null,
+            null,
+            win.exp.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+            0x1F0003, // TIMER_ALL_ACCESS
+        );
+        defer if (timer) |t| std.os.windows.CloseHandle(t);
+
+        // Fallback to timeBeginPeriod if high-resolution timer is not available
+        const use_legacy_timer = (timer == null);
+        if (use_legacy_timer) {
+            _ = win.exp.winmm.timeBeginPeriod(1);
+        }
+        defer if (use_legacy_timer) {
+            _ = win.exp.winmm.timeEndPeriod(1);
+        };
+
         var last_blink: u64 = GetTickCount64();
 
         while (!self.stop_requested.load(.monotonic)) {
@@ -305,7 +320,18 @@ fn threadMain_(self: *Thread) !void {
             self.nativeRenderCycle(&last_blink, now);
 
             // Adaptive sleep: 4ms (~240fps) when focused, 16ms (~60fps) when not
-            Sleep(if (self.flags.focused) 4 else 16);
+            const sleep_ms: u32 = if (self.flags.focused) 4 else 16;
+            if (timer) |t| {
+                // Negative value = relative time in 100ns units
+                var due_time = win.exp.LARGE_INTEGER{ .quad_part = -@as(i64, sleep_ms) * 10000 };
+                if (k32.SetWaitableTimerEx(t, &due_time, 0, null, null, null, 0) != 0) {
+                    _ = k32.WaitForSingleObject(t, sleep_ms * 2);
+                } else {
+                    std.os.windows.kernel32.Sleep(sleep_ms);
+                }
+            } else {
+                std.os.windows.kernel32.Sleep(sleep_ms);
+            }
         }
     } else {
         _ = try self.loop.run(.until_done);
