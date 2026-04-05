@@ -408,18 +408,24 @@ fn collection(
     // directly by file path.
     if (comptime builtin.os.tag == .windows) {
         // Try common CJK fallback fonts
-        const cjk_fonts = [_][:0]const u8{
-            "C:\\Windows\\Fonts\\msgothic.ttc",
-            "C:\\Windows\\Fonts\\meiryo.ttc",
-            "C:\\Windows\\Fonts\\YuGothR.ttc",
-            "C:\\Windows\\Fonts\\malgun.ttf",
+        var fonts_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const fonts_dir = getWindowsFontsDir(&fonts_dir_buf) orelse "C:\\Windows\\Fonts\\";
+        const cjk_filenames = [_][]const u8{
+            "msgothic.ttc",
+            "meiryo.ttc",
+            "YuGothR.ttc",
+            "malgun.ttf",
         };
-        for (cjk_fonts) |font_path| {
+        for (cjk_filenames) |filename| {
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const full_path = std.fmt.bufPrint(&path_buf, "{s}{s}", .{ fonts_dir, filename }) catch continue;
+            path_buf[full_path.len] = 0;
+            const path_z: [:0]const u8 = path_buf[0..full_path.len :0];
             _ = c.add(
                 self.alloc,
                 font.face.Face.initFile(
                     self.font_lib,
-                    font_path,
+                    path_z,
                     0,
                     load_options.faceOptions(),
                 ) catch continue,
@@ -486,8 +492,10 @@ fn findWindowsFont(
             var filename_buf: [512]u8 = undefined;
             const filename_len = std.unicode.utf16LeToUtf8(&filename_buf, data_utf16[0 .. data_len / 2 - 1]) catch continue;
 
+            var fonts_dir_buf2: [std.fs.max_path_bytes]u8 = undefined;
+            const fonts_dir2 = getWindowsFontsDir(&fonts_dir_buf2) orelse "C:\\Windows\\Fonts\\";
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const full_path = std.fmt.bufPrint(&path_buf, "C:\\Windows\\Fonts\\{s}", .{filename_buf[0..filename_len]}) catch continue;
+            const full_path = std.fmt.bufPrint(&path_buf, "{s}{s}", .{ fonts_dir2, filename_buf[0..filename_len] }) catch continue;
             // Need null-terminated for initFile
             path_buf[full_path.len] = 0;
             const path_z: [:0]const u8 = path_buf[0..full_path.len :0];
@@ -498,8 +506,16 @@ fn findWindowsFont(
     return null;
 }
 
+/// Get the Windows Fonts directory path (e.g. "C:\Windows\Fonts\").
+/// Uses %WINDIR% environment variable to avoid hardcoding the Windows path.
+fn getWindowsFontsDir(buf: []u8) ?[]const u8 {
+    const windir = std.process.getEnvVarOwned(std.heap.page_allocator, "WINDIR") catch return null;
+    defer std.heap.page_allocator.free(windir);
+    return std.fmt.bufPrint(buf, "{s}\\Fonts\\", .{windir}) catch null;
+}
+
 /// Decrement the ref count for the given key. If the ref count is zero,
-/// the grid will be deinitialized and removed from the map.j:w
+/// the grid will be deinitialized and removed from the map.
 pub fn deref(self: *SharedGridSet, key: Key) void {
     self.lock.lock();
     defer self.lock.unlock();
