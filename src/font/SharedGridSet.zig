@@ -487,7 +487,7 @@ fn findWindowsFont(
         var name_utf8_buf: [512]u8 = undefined;
         const name_utf8_len = std.unicode.utf16LeToUtf8(&name_utf8_buf, name_buf[0..name_len]) catch continue;
 
-        if (std.ascii.indexOfIgnoreCase(name_utf8_buf[0..name_utf8_len], family)) |_| {
+        if (fontFamilyMatch(name_utf8_buf[0..name_utf8_len], family)) {
             const data_utf16: []const u16 = @alignCast(std.mem.bytesAsSlice(u16, data_buf[0..data_len]));
             var filename_buf: [512]u8 = undefined;
             const filename_len = std.unicode.utf16LeToUtf8(&filename_buf, data_utf16[0 .. data_len / 2 - 1]) catch continue;
@@ -512,6 +512,17 @@ fn getWindowsFontsDir(buf: []u8) ?[]const u8 {
     const windir = std.process.getEnvVarOwned(std.heap.page_allocator, "WINDIR") catch return null;
     defer std.heap.page_allocator.free(windir);
     return std.fmt.bufPrint(buf, "{s}\\Fonts\\", .{windir}) catch null;
+}
+
+/// Match a font family name at word boundaries within a registry font name.
+/// Registry names are like "MS Gothic (TrueType)" — this prevents "Go" from
+/// matching "Gothic" by requiring the match to be at a word boundary.
+fn fontFamilyMatch(name: []const u8, family: [:0]const u8) bool {
+    const pos = std.ascii.indexOfIgnoreCase(name, family) orelse return false;
+    const end = pos + family.len;
+    const start_ok = (pos == 0 or name[pos - 1] == ' ');
+    const end_ok = (end >= name.len or name[end] == ' ' or name[end] == '(');
+    return start_ok and end_ok;
 }
 
 /// Decrement the ref count for the given key. If the ref count is zero,
@@ -956,4 +967,25 @@ test SharedGridSet {
     // If I deref grid1 then we should have a count of 0
     set.deref(key1);
     try testing.expectEqual(@as(usize, 0), set.count());
+}
+
+test "fontFamilyMatch" {
+    const testing = std.testing;
+    // Exact match
+    try testing.expect(fontFamilyMatch("Go (TrueType)", "Go"));
+    // Match at start with space separator
+    try testing.expect(fontFamilyMatch("MS Gothic (TrueType)", "MS Gothic"));
+    // Substring should NOT match
+    try testing.expect(!fontFamilyMatch("MS Gothic (TrueType)", "Go"));
+    try testing.expect(!fontFamilyMatch("Gothic", "Go"));
+    // Full name match
+    try testing.expect(fontFamilyMatch("Meiryo", "Meiryo"));
+    // Case insensitive
+    try testing.expect(fontFamilyMatch("MS GOTHIC (TrueType)", "ms gothic"));
+    // No match
+    try testing.expect(!fontFamilyMatch("Arial (TrueType)", "Helvetica"));
+    // Match in middle
+    try testing.expect(fontFamilyMatch("Noto Sans CJK (TrueType)", "Sans CJK"));
+    // Partial word should NOT match
+    try testing.expect(!fontFamilyMatch("Consolas (TrueType)", "Con"));
 }
