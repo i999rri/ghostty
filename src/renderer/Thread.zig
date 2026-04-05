@@ -292,8 +292,10 @@ fn threadMain_(self: *Thread) !void {
 
         while (!RendererType.API.stop_requested.load(.monotonic)) {
             // Poll xev for stop signal (non-blocking)
-            _ = self.loop.run(.no_wait) catch {};
-            self.drainMailbox() catch {};
+            _ = self.loop.run(.no_wait) catch |err|
+                log.err("error in xev poll err={}", .{err});
+            self.drainMailbox() catch |err|
+                log.err("error draining mailbox err={}", .{err});
             if (self.flags.cursor_blink_reset) {
                 self.flags.cursor_blink_reset = false;
                 last_blink = GetTickCount64();
@@ -302,7 +304,8 @@ fn threadMain_(self: *Thread) !void {
             self.renderer.updateFrame(
                 self.state,
                 self.flags.cursor_blink_visible,
-            ) catch {};
+            ) catch |err|
+                log.warn("error rendering err={}", .{err});
 
             const now = GetTickCount64();
             if (now - last_blink >= cursorBlinkInterval()) {
@@ -310,7 +313,8 @@ fn threadMain_(self: *Thread) !void {
                 last_blink = now;
             }
 
-            self.renderer.drawFrame(false) catch {};
+            self.renderer.drawFrame(false) catch |err|
+                log.warn("error drawing err={}", .{err});
 
             // Adaptive sleep: 4ms (~240fps) when focused, 16ms (~60fps) when not
             Sleep(if (self.flags.focused) 4 else 16);

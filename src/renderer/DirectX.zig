@@ -29,10 +29,10 @@ pub const custom_shader_y_is_down = true;
 pub const swap_chain_count = 2;
 
 /// Called from C++ WM_SIZE to update window size without cross-thread deadlock.
+/// Thin wrapper needed because Zig DLL only exports Zig `export fn`, not C functions.
 export fn dx_notify_resize(w: u32, h: u32) void {
     dx.dx_set_window_size(w, h);
 }
-
 
 /// Use a native Windows render loop instead of xev.
 /// xev's IOCP event loop stalls after D3D11 device creation.
