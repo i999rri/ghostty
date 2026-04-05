@@ -1,4 +1,6 @@
 const std = @import("std");
+const DirectX = @import("../DirectX.zig");
+const dx = DirectX.dx;
 
 const Self = @This();
 
@@ -12,7 +14,7 @@ pub const Options = struct {
 
 width: u32,
 height: u32,
-rt_handle: ?*anyopaque = null, // DxRenderTarget*
+rt_handle: ?*dx.DxRenderTarget = null,
 
 pub fn init(opts: Options) !Self {
     return .{
@@ -22,6 +24,6 @@ pub fn init(opts: Options) !Self {
 }
 
 pub fn deinit(self: *Self) void {
-    // TODO: dx_destroy_render_target if rt_handle is set
+    if (self.rt_handle) |h| dx.dx_destroy_render_target(h);
     self.* = undefined;
 }
