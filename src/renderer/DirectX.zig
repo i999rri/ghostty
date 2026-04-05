@@ -44,8 +44,6 @@ const log = std.log.scoped(.directx);
 pub var current_device: ?*dx.DxDevice = null;
 /// HWND stored from surfaceInit for device creation in threadEnter.
 pub var stored_hwnd: ?*anyopaque = null;
-/// Stop flag for native render loop.
-pub var stop_requested: std.atomic.Value(bool) = .{ .raw = false };
 
 // C API from d3d11_impl.c — imported via build-system TranslateC for type safety
 pub const dx = @import("d3d11-c");
@@ -64,7 +62,6 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
 }
 
 pub fn deinit(self: *DirectX) void {
-    stop_requested.store(true, .monotonic);
     if (self.device) |dev| dx.dx_destroy(dev);
     self.* = undefined;
 }

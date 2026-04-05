@@ -19,6 +19,15 @@ const log = std.log.scoped(.renderer_thread);
 const DRAW_INTERVAL = 8; // 120 FPS
 const CURSOR_BLINK_INTERVAL = 600;
 
+/// Whether to use a native render loop instead of xev's event loop.
+/// DirectX on Windows requires this because xev's IOCP is incompatible with D3D11.
+const use_native_loop = blk: {
+    const RendererType = rendererpkg.Renderer;
+    break :blk @hasDecl(RendererType, "API") and
+        @hasDecl(RendererType.API, "native_render_loop") and
+        RendererType.API.native_render_loop;
+};
+
 /// Whether calls to `drawFrame` must be done from the app thread.
 ///
 /// If this is `true` then we send a `redraw_surface` message to the apprt
@@ -111,6 +120,10 @@ flags: packed struct {
     /// Set by drainMailbox on reset_cursor_blink; consumed by native render loop
     cursor_blink_reset: bool = false,
 } = .{},
+
+/// Stop flag for native render loop. Only exists when use_native_loop is true.
+stop_requested: if (use_native_loop) std.atomic.Value(bool) else void =
+    if (use_native_loop) .{ .raw = false } else {},
 
 pub const DerivedConfig = struct {
     custom_shader_animation: configpkg.CustomShaderAnimation,
@@ -240,14 +253,8 @@ fn threadMain_(self: *Thread) !void {
 
     // DirectX: xev's IOCP loop stalls after D3D11 device creation.
     // Use a simple native render loop instead.
-    const use_native_loop = comptime blk: {
-        const RendererType = rendererpkg.Renderer;
-        break :blk @hasDecl(RendererType, "API") and @hasDecl(RendererType.API, "native_render_loop") and RendererType.API.native_render_loop;
-    };
-
     if (use_native_loop) {
-        const RendererType = rendererpkg.Renderer;
-        RendererType.API.stop_requested.store(false, .seq_cst);
+        self.stop_requested.store(false, .seq_cst);
     } else {
         self.wakeup.wait(&self.loop, &self.wakeup_c, Thread, self, wakeupCallback);
         self.stop.wait(&self.loop, &self.stop_c, Thread, self, stopCallback);
@@ -276,8 +283,7 @@ fn threadMain_(self: *Thread) !void {
         //
         // Register stop handler: when Surface calls stop.notify(), run the
         // xev loop briefly to process it and set our atomic flag.
-        const RendererType = rendererpkg.Renderer;
-        RendererType.API.stop_requested.store(false, .monotonic);
+        self.stop_requested.store(false, .monotonic);
         self.stop.wait(&self.loop, &self.stop_c, Thread, self, nativeStopCallback);
 
         const win = @import("../os/windows.zig");
@@ -290,31 +296,13 @@ fn threadMain_(self: *Thread) !void {
         defer _ = timeEndPeriod(1);
         var last_blink: u64 = GetTickCount64();
 
-        while (!RendererType.API.stop_requested.load(.monotonic)) {
+        while (!self.stop_requested.load(.monotonic)) {
             // Poll xev for stop signal (non-blocking)
             _ = self.loop.run(.no_wait) catch |err|
                 log.err("error in xev poll err={}", .{err});
-            self.drainMailbox() catch |err|
-                log.err("error draining mailbox err={}", .{err});
-            if (self.flags.cursor_blink_reset) {
-                self.flags.cursor_blink_reset = false;
-                last_blink = GetTickCount64();
-            }
-
-            self.renderer.updateFrame(
-                self.state,
-                self.flags.cursor_blink_visible,
-            ) catch |err|
-                log.warn("error rendering err={}", .{err});
 
             const now = GetTickCount64();
-            if (now - last_blink >= cursorBlinkInterval()) {
-                self.flags.cursor_blink_visible = !self.flags.cursor_blink_visible;
-                last_blink = now;
-            }
-
-            self.renderer.drawFrame(false) catch |err|
-                log.warn("error drawing err={}", .{err});
+            self.nativeRenderCycle(&last_blink, now);
 
             // Adaptive sleep: 4ms (~240fps) when focused, 16ms (~60fps) when not
             Sleep(if (self.flags.focused) 4 else 16);
@@ -451,36 +439,42 @@ fn drainMailbox(self: *Thread) !void {
                 // Set it on the renderer
                 try self.renderer.setFocus(v);
 
-                // We always resync our draw timer (may disable it)
-                self.syncDrawTimer();
-
-                if (!v) {
-                    // If we're not focused, then we stop the cursor blink
-                    if (self.cursor_c.state() == .active and
-                        self.cursor_c_cancel.state() == .dead)
-                    {
-                        self.cursor_h.cancel(
-                            &self.loop,
-                            &self.cursor_c,
-                            &self.cursor_c_cancel,
-                            void,
-                            null,
-                            cursorCancelCallback,
-                        );
-                    }
+                if (use_native_loop) {
+                    // Native loop: cursor blink is managed by the poll loop.
+                    // Just show cursor immediately on focus gain.
+                    if (v) self.flags.cursor_blink_visible = true;
                 } else {
-                    // If we're focused, we immediately show the cursor again
-                    // and then restart the timer.
-                    if (self.cursor_c.state() != .active) {
-                        self.flags.cursor_blink_visible = true;
-                        self.cursor_h.run(
-                            &self.loop,
-                            &self.cursor_c,
-                            cursorBlinkInterval(),
-                            Thread,
-                            self,
-                            cursorTimerCallback,
-                        );
+                    // xev: resync draw timer and manage cursor timer
+                    self.syncDrawTimer();
+
+                    if (!v) {
+                        // If we're not focused, then we stop the cursor blink
+                        if (self.cursor_c.state() == .active and
+                            self.cursor_c_cancel.state() == .dead)
+                        {
+                            self.cursor_h.cancel(
+                                &self.loop,
+                                &self.cursor_c,
+                                &self.cursor_c_cancel,
+                                void,
+                                null,
+                                cursorCancelCallback,
+                            );
+                        }
+                    } else {
+                        // If we're focused, we immediately show the cursor again
+                        // and then restart the timer.
+                        if (self.cursor_c.state() != .active) {
+                            self.flags.cursor_blink_visible = true;
+                            self.cursor_h.run(
+                                &self.loop,
+                                &self.cursor_c,
+                                cursorBlinkInterval(),
+                                Thread,
+                                self,
+                                cursorTimerCallback,
+                            );
+                        }
                     }
                 }
             },
@@ -488,16 +482,18 @@ fn drainMailbox(self: *Thread) !void {
             .reset_cursor_blink => {
                 self.flags.cursor_blink_visible = true;
                 self.flags.cursor_blink_reset = true;
-                if (self.cursor_c.state() == .active) {
-                    self.cursor_h.reset(
-                        &self.loop,
-                        &self.cursor_c,
-                        &self.cursor_c_cancel,
-                        cursorBlinkInterval(),
-                        Thread,
-                        self,
-                        cursorTimerCallback,
-                    );
+                if (!use_native_loop) {
+                    if (self.cursor_c.state() == .active) {
+                        self.cursor_h.reset(
+                            &self.loop,
+                            &self.cursor_c,
+                            &self.cursor_c_cancel,
+                            cursorBlinkInterval(),
+                            Thread,
+                            self,
+                            cursorTimerCallback,
+                        );
+                    }
                 }
             },
 
@@ -514,9 +510,11 @@ fn drainMailbox(self: *Thread) !void {
                 try self.changeConfig(config.thread);
                 try self.renderer.changeConfig(config.impl);
 
-                // Stop and start the draw timer to capture the new
-                // hasAnimations value.
-                self.syncDrawTimer();
+                if (!use_native_loop) {
+                    // Stop and start the draw timer to capture the new
+                    // hasAnimations value.
+                    self.syncDrawTimer();
+                }
             },
 
             .search_viewport_matches => |v| {
@@ -571,6 +569,31 @@ fn drawFrame(self: *Thread, now: bool) void {
         self.renderer.drawFrame(false) catch |err|
             log.warn("error drawing err={}", .{err});
     }
+}
+
+/// Perform one render cycle for the native render loop.
+/// Drains mailbox, updates frame, toggles cursor blink, and draws.
+fn nativeRenderCycle(self: *Thread, last_blink: *u64, now: u64) void {
+    self.drainMailbox() catch |err|
+        log.err("error draining mailbox err={}", .{err});
+
+    if (self.flags.cursor_blink_reset) {
+        self.flags.cursor_blink_reset = false;
+        last_blink.* = now;
+    }
+
+    self.renderer.updateFrame(
+        self.state,
+        self.flags.cursor_blink_visible,
+    ) catch |err|
+        log.warn("error rendering err={}", .{err});
+
+    if (now - last_blink.* >= cursorBlinkInterval()) {
+        self.flags.cursor_blink_visible = !self.flags.cursor_blink_visible;
+        last_blink.* = now;
+    }
+
+    self.drawFrame(false);
 }
 
 fn wakeupCallback(
@@ -764,15 +787,16 @@ fn stopCallback(
 /// Stop callback for native render loop. Sets the atomic flag
 /// so the poll loop exits.
 fn nativeStopCallback(
-    _: ?*Thread,
+    self_: ?*Thread,
     _: *xev.Loop,
     _: *xev.Completion,
     r: xev.Async.WaitError!void,
 ) xev.CallbackAction {
     _ = r catch return .disarm;
-    const RendererType = rendererpkg.Renderer;
-    if (@hasDecl(RendererType, "API") and @hasDecl(RendererType.API, "stop_requested")) {
-        RendererType.API.stop_requested.store(true, .monotonic);
+    if (self_) |self| {
+        if (use_native_loop) {
+            self.stop_requested.store(true, .monotonic);
+        }
     }
     return .disarm;
 }
