@@ -63,6 +63,8 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
 
 pub fn deinit(self: *DirectX) void {
     if (self.device) |dev| dx.dx_destroy(dev);
+    current_device = null;
+    stored_hwnd = null;
     self.* = undefined;
 }
 
