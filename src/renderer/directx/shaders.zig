@@ -99,7 +99,6 @@ pub const Shaders = struct {
     pipelines: PipelineCollection,
     post_pipelines: []const Pipeline,
     defunct: bool = false,
-    device: ?*anyopaque = null,
 
     pub const PipelineCollection = struct {
         bg_color: Pipeline,
@@ -155,17 +154,6 @@ pub const Shaders = struct {
         self.pipelines.cell_text.storeSource(hlsl_cell_text, hlsl_cell_text);
         self.pipelines.image.storeSource(hlsl_image, hlsl_image);
         self.pipelines.bg_image.storeSource(hlsl_bg_image, hlsl_bg_image);
-    }
-
-    /// Step 2: Create D3D11 shader objects from bytecode (needs device, renderer thread).
-    pub fn createDeviceObjects(self: *Shaders, device: ?*anyopaque) void {
-        if (device == null) return;
-        self.device = device;
-        self.pipelines.bg_color.createDeviceObjects(device);
-        self.pipelines.cell_bg.createDeviceObjects(device);
-        self.pipelines.cell_text.createDeviceObjects(device);
-        self.pipelines.image.createDeviceObjects(device);
-        self.pipelines.bg_image.createDeviceObjects(device);
     }
 
     pub fn deinit(self: *Shaders, alloc: Allocator) void {
