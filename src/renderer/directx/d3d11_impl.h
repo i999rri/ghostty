@@ -13,7 +13,16 @@ typedef struct DxDevice DxDevice;
 // Device creation — HWND mode (raw Win32 window)
 DxDevice* dx_create_for_hwnd(void* hwnd, uint32_t width, uint32_t height);
 // Device creation — Composition mode (WinUI 3 SwapChainPanel)
-DxDevice* dx_create_for_composition(void* hwnd, uint32_t width, uint32_t height, void* swap_chain_panel);
+// Caller must call ISwapChainPanelNative::SetSwapChain on the UI thread
+// with the swap chain from dx_get_swap_chain().
+DxDevice* dx_create_for_composition(void* hwnd, uint32_t width, uint32_t height);
+
+// Get the swap chain from a device (for SetSwapChain on UI thread)
+void* dx_get_swap_chain(DxDevice* dev);
+
+// Set swap chain on a SwapChainPanel. Must be called from UI thread.
+// Returns 0 on success, negative on failure.
+int dx_set_swap_chain_on_panel(DxDevice* dev, void* swap_chain_panel);
 void dx_destroy(DxDevice* dev);
 
 // Swap chain

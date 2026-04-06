@@ -163,7 +163,7 @@ DxDevice* dx_create_for_hwnd(void* hwnd, uint32_t width, uint32_t height) {
     return dx_finalize(dev, swap_chain1, width, height);
 }
 
-DxDevice* dx_create_for_composition(void* hwnd, uint32_t width, uint32_t height, void* swap_chain_panel) {
+DxDevice* dx_create_for_composition(void* hwnd, uint32_t width, uint32_t height) {
     DxDevice* dev = dx_create_device(hwnd);
     if (!dev) return NULL;
 
@@ -176,8 +176,23 @@ DxDevice* dx_create_for_composition(void* hwnd, uint32_t width, uint32_t height,
     IDXGIFactory2_Release(factory);
 
     if (FAILED(hr) || !swap_chain1) return dx_finalize(dev, NULL, width, height);
+    return dx_finalize(dev, swap_chain1, width, height);
+}
 
-    // Set swap chain on the panel via ISwapChainPanelNative vtable
+void* dx_get_swap_chain(DxDevice* dev) {
+    return dev ? dev->swap_chain : NULL;
+}
+
+// Set swap chain on a SwapChainPanel. Must be called from UI thread.
+int dx_set_swap_chain_on_panel(DxDevice* dev, void* swap_chain_panel) {
+    if (!dev || !dev->swap_chain || !swap_chain_panel) return -1;
+
+    // Get IDXGISwapChain1 from IDXGISwapChain
+    IDXGISwapChain1* swap_chain1 = NULL;
+    HRESULT hr = IDXGISwapChain_QueryInterface(dev->swap_chain, &IID_IDXGISwapChain1, (void**)&swap_chain1);
+    if (FAILED(hr) || !swap_chain1) return -2;
+
+    // ISwapChainPanelNative vtable
     typedef struct ISwapChainPanelNativeVtbl {
         HRESULT (STDMETHODCALLTYPE *QueryInterface)(void* This, REFIID riid, void** ppvObject);
         ULONG (STDMETHODCALLTYPE *AddRef)(void* This);
@@ -188,11 +203,13 @@ DxDevice* dx_create_for_composition(void* hwnd, uint32_t width, uint32_t height,
 
     ISwapChainPanelNative* panel = (ISwapChainPanelNative*)swap_chain_panel;
     hr = panel->lpVtbl->SetSwapChain(panel, swap_chain1);
+    IDXGISwapChain1_Release(swap_chain1);
+
     if (FAILED(hr)) {
         OutputDebugStringA("D3D11: ISwapChainPanelNative::SetSwapChain FAILED\n");
+        return -3;
     }
-
-    return dx_finalize(dev, swap_chain1, width, height);
+    return 0;
 }
 
 static ID3D11SamplerState* default_sampler = NULL;

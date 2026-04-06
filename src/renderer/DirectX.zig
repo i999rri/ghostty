@@ -34,6 +34,13 @@ export fn dx_notify_resize(w: u32, h: u32) void {
     dx.dx_set_window_size(w, h);
 }
 
+/// Set swap chain on a SwapChainPanel. Must be called from UI thread after surface creation.
+/// Returns 0 on success.
+export fn dx_set_panel_swap_chain(swap_chain_panel: ?*anyopaque) i32 {
+    const dev = current_device orelse return -1;
+    return dx.dx_set_swap_chain_on_panel(dev, swap_chain_panel);
+}
+
 /// Use a native Windows render loop instead of xev.
 /// xev's IOCP event loop stalls after D3D11 device creation.
 pub const native_render_loop = true;
@@ -108,8 +115,8 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) InitError!void
     const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 
     const use_composition = stored_swap_chain_panel != null;
-    const dev = (if (stored_swap_chain_panel) |panel|
-        dx.dx_create_for_composition(hwnd, w, h, panel)
+    const dev = (if (stored_swap_chain_panel != null)
+        dx.dx_create_for_composition(hwnd, w, h)
     else
         dx.dx_create_for_hwnd(hwnd, w, h)) orelse {
         if (use_composition)
