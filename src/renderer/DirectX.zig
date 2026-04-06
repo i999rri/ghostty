@@ -91,18 +91,33 @@ pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void 
     _ = surface;
 }
 
-pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
+const InitError = error{
+    HWNDNotSet,
+    DeviceCreationFailed,
+};
+
+pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) InitError!void {
     _ = surface;
-    const hwnd = stored_hwnd orelse return;
+    const hwnd = stored_hwnd orelse {
+        log.err("HWND not set — surfaceInit was not called before threadEnter", .{});
+        return error.HWNDNotSet;
+    };
     var rect: windows.exp.RECT = undefined;
     _ = windows.exp.user32.GetClientRect(hwnd, &rect);
     const w: u32 = @intCast(@max(rect.right - rect.left, 1));
     const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 
+    const use_composition = stored_swap_chain_panel != null;
     const dev = (if (stored_swap_chain_panel) |panel|
         dx.dx_create_for_composition(hwnd, w, h, panel)
     else
-        dx.dx_create_for_hwnd(hwnd, w, h)) orelse return;
+        dx.dx_create_for_hwnd(hwnd, w, h)) orelse {
+        if (use_composition)
+            log.err("D3D11 device creation failed — CreateSwapChainForComposition or SetSwapChain returned null (invalid ISwapChainPanelNative pointer?)", .{})
+        else
+            log.err("D3D11 device creation failed — CreateSwapChainForHwnd returned null (invalid HWND or unsupported GPU?)", .{});
+        return error.DeviceCreationFailed;
+    };
     const self_mut: *DirectX = @constCast(self);
     self_mut.device = dev;
     current_device = dev;
