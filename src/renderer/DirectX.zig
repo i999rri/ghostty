@@ -44,6 +44,8 @@ const log = std.log.scoped(.directx);
 pub var current_device: ?*dx.DxDevice = null;
 /// HWND stored from surfaceInit for device creation in threadEnter.
 pub var stored_hwnd: ?*anyopaque = null;
+/// ISwapChainPanelNative* for WinUI 3 mode (optional).
+pub var stored_swap_chain_panel: ?*anyopaque = null;
 
 // C API from d3d11_impl.c — imported via build-system TranslateC for type safety
 pub const dx = @import("d3d11-c");
@@ -65,6 +67,7 @@ pub fn deinit(self: *DirectX) void {
     if (self.device) |dev| dx.dx_destroy(dev);
     current_device = null;
     stored_hwnd = null;
+    stored_swap_chain_panel = null;
     self.* = undefined;
 }
 
@@ -72,6 +75,7 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
     if (comptime builtin.os.tag != .windows) return;
     const hwnd: ?*anyopaque = @ptrCast(surface.platform.windows.hwnd);
     stored_hwnd = hwnd;
+    stored_swap_chain_panel = surface.platform.windows.swap_chain_panel;
 
     // Set initial window size (main thread, safe to call GetClientRect here)
     var rect: windows.exp.RECT = undefined;
@@ -95,7 +99,10 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     const w: u32 = @intCast(@max(rect.right - rect.left, 1));
     const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 
-    const dev = dx.dx_create(hwnd, w, h) orelse return;
+    const dev = (if (stored_swap_chain_panel) |panel|
+        dx.dx_create_for_composition(hwnd, w, h, panel)
+    else
+        dx.dx_create_for_hwnd(hwnd, w, h)) orelse return;
     const self_mut: *DirectX = @constCast(self);
     self_mut.device = dev;
     current_device = dev;

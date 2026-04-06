@@ -45,69 +45,8 @@ static void dx_create_backbuffer_rtv(DxDevice* dev) {
     }
 }
 
-DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
-    DxDevice* dev = (DxDevice*)calloc(1, sizeof(DxDevice));
-    if (!dev) return NULL;
-    dev->hwnd = (HWND)hwnd;
-
-    D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
-    UINT flags = 0;
-#ifndef NDEBUG
-    flags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
-
-    // Create device first (without swap chain)
-    HRESULT hr = D3D11CreateDevice(
-        NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags,
-        feature_levels, 1, D3D11_SDK_VERSION,
-        &dev->device, &dev->feature_level, &dev->context);
-
-    if (FAILED(hr)) {
-        OutputDebugStringA("D3D11: CreateDevice FAILED\n");
-        free(dev);
-        return NULL;
-    }
-
-    // Create swap chain via DXGI 1.2 for DXGI_SCALING_NONE (prevents DWM stretching on resize)
-    IDXGIDevice* dxgi_device = NULL;
-    IDXGIAdapter* adapter = NULL;
-    IDXGIFactory2* factory = NULL;
-    ID3D11Device_QueryInterface(dev->device, &IID_IDXGIDevice, (void**)&dxgi_device);
-    IDXGIDevice_GetAdapter(dxgi_device, &adapter);
-    IDXGIAdapter_GetParent(adapter, &IID_IDXGIFactory2, (void**)&factory);
-
-    DXGI_SWAP_CHAIN_DESC1 scd = {0};
-    scd.Width = width;
-    scd.Height = height;
-    scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scd.SampleDesc.Count = 1;
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.BufferCount = 2;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    scd.Scaling = DXGI_SCALING_NONE;
-
-    IDXGISwapChain1* swap_chain1 = NULL;
-    hr = IDXGIFactory2_CreateSwapChainForHwnd(factory, (IUnknown*)dev->device, dev->hwnd, &scd, NULL, NULL, &swap_chain1);
-
-    IDXGIFactory2_Release(factory);
-    IDXGIAdapter_Release(adapter);
-    IDXGIDevice_Release(dxgi_device);
-
-    if (FAILED(hr) || !swap_chain1) {
-        OutputDebugStringA("D3D11: CreateSwapChainForHwnd FAILED\n");
-        ID3D11DeviceContext_Release(dev->context);
-        ID3D11Device_Release(dev->device);
-        free(dev);
-        return NULL;
-    }
-
-    // Get IDXGISwapChain from IDXGISwapChain1
-    IDXGISwapChain1_QueryInterface(swap_chain1, &IID_IDXGISwapChain, (void**)&dev->swap_chain);
-    IDXGISwapChain1_Release(swap_chain1);
-#ifndef NDEBUG
-    OutputDebugStringA("D3D11: Device created successfully\n");
-#endif
-
+// Common initialization after swap chain is created (backbuffer, blend, rasterizer)
+static void dx_init_device_state(DxDevice* dev, uint32_t width, uint32_t height) {
     dx_create_backbuffer_rtv(dev);
     dev->bb_width = width;
     dev->bb_height = height;
@@ -127,21 +66,133 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     bd.RenderTarget[0].BlendEnable = FALSE;
     ID3D11Device_CreateBlendState(dev->device, &bd, &dev->blend_off);
 
-    // Create rasterizer state with no culling (full-screen triangles have CCW winding in screen space)
+    // Create rasterizer state with no culling
     D3D11_RASTERIZER_DESC rd = {0};
     rd.FillMode = D3D11_FILL_SOLID;
     rd.CullMode = D3D11_CULL_NONE;
     rd.FrontCounterClockwise = FALSE;
     rd.DepthClipEnable = TRUE;
-    rd.ScissorEnable = FALSE;
-    rd.MultisampleEnable = FALSE;
-    rd.AntialiasedLineEnable = FALSE;
     ID3D11Device_CreateRasterizerState(dev->device, &rd, &dev->rasterizer_state);
     if (dev->rasterizer_state) {
         ID3D11DeviceContext_RSSetState(dev->context, dev->rasterizer_state);
     }
+}
 
+// Create D3D11 device + allocate DxDevice + create D3D11 device (no swap chain yet)
+static DxDevice* dx_create_device(void* hwnd) {
+    DxDevice* dev = (DxDevice*)calloc(1, sizeof(DxDevice));
+    if (!dev) return NULL;
+    dev->hwnd = (HWND)hwnd;
+
+    D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
+    UINT flags = 0;
+#ifndef NDEBUG
+    flags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+
+    HRESULT hr = D3D11CreateDevice(
+        NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags,
+        feature_levels, 1, D3D11_SDK_VERSION,
+        &dev->device, &dev->feature_level, &dev->context);
+
+    if (FAILED(hr)) {
+        OutputDebugStringA("D3D11: CreateDevice FAILED\n");
+        free(dev);
+        return NULL;
+    }
     return dev;
+}
+
+// Get DXGI factory from device
+static IDXGIFactory2* dx_get_dxgi_factory(DxDevice* dev) {
+    IDXGIDevice* dxgi_device = NULL;
+    IDXGIAdapter* adapter = NULL;
+    IDXGIFactory2* factory = NULL;
+    ID3D11Device_QueryInterface(dev->device, &IID_IDXGIDevice, (void**)&dxgi_device);
+    IDXGIDevice_GetAdapter(dxgi_device, &adapter);
+    IDXGIAdapter_GetParent(adapter, &IID_IDXGIFactory2, (void**)&factory);
+    IDXGIAdapter_Release(adapter);
+    IDXGIDevice_Release(dxgi_device);
+    return factory;
+}
+
+// Fill common swap chain descriptor fields
+static DXGI_SWAP_CHAIN_DESC1 dx_swap_chain_desc(uint32_t width, uint32_t height) {
+    DXGI_SWAP_CHAIN_DESC1 scd = {0};
+    scd.Width = width;
+    scd.Height = height;
+    scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.SampleDesc.Count = 1;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.BufferCount = 2;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    return scd;
+}
+
+// Finalize swap chain: get IDXGISwapChain, init device state
+static DxDevice* dx_finalize(DxDevice* dev, IDXGISwapChain1* swap_chain1, uint32_t width, uint32_t height) {
+    if (!swap_chain1) {
+        OutputDebugStringA("D3D11: SwapChain creation FAILED\n");
+        ID3D11DeviceContext_Release(dev->context);
+        ID3D11Device_Release(dev->device);
+        free(dev);
+        return NULL;
+    }
+    IDXGISwapChain1_QueryInterface(swap_chain1, &IID_IDXGISwapChain, (void**)&dev->swap_chain);
+    IDXGISwapChain1_Release(swap_chain1);
+#ifndef NDEBUG
+    OutputDebugStringA("D3D11: Device created successfully\n");
+#endif
+    dx_init_device_state(dev, width, height);
+    return dev;
+}
+
+DxDevice* dx_create_for_hwnd(void* hwnd, uint32_t width, uint32_t height) {
+    DxDevice* dev = dx_create_device(hwnd);
+    if (!dev) return NULL;
+
+    IDXGIFactory2* factory = dx_get_dxgi_factory(dev);
+    DXGI_SWAP_CHAIN_DESC1 scd = dx_swap_chain_desc(width, height);
+    scd.Scaling = DXGI_SCALING_NONE;
+
+    IDXGISwapChain1* swap_chain1 = NULL;
+    HRESULT hr = IDXGIFactory2_CreateSwapChainForHwnd(factory, (IUnknown*)dev->device, dev->hwnd, &scd, NULL, NULL, &swap_chain1);
+    IDXGIFactory2_Release(factory);
+
+    if (FAILED(hr)) return dx_finalize(dev, NULL, width, height);
+    return dx_finalize(dev, swap_chain1, width, height);
+}
+
+DxDevice* dx_create_for_composition(void* hwnd, uint32_t width, uint32_t height, void* swap_chain_panel) {
+    DxDevice* dev = dx_create_device(hwnd);
+    if (!dev) return NULL;
+
+    IDXGIFactory2* factory = dx_get_dxgi_factory(dev);
+    DXGI_SWAP_CHAIN_DESC1 scd = dx_swap_chain_desc(width, height);
+    scd.Scaling = DXGI_SCALING_STRETCH;
+
+    IDXGISwapChain1* swap_chain1 = NULL;
+    HRESULT hr = IDXGIFactory2_CreateSwapChainForComposition(factory, (IUnknown*)dev->device, &scd, NULL, &swap_chain1);
+    IDXGIFactory2_Release(factory);
+
+    if (FAILED(hr) || !swap_chain1) return dx_finalize(dev, NULL, width, height);
+
+    // Set swap chain on the panel via ISwapChainPanelNative vtable
+    typedef struct ISwapChainPanelNativeVtbl {
+        HRESULT (STDMETHODCALLTYPE *QueryInterface)(void* This, REFIID riid, void** ppvObject);
+        ULONG (STDMETHODCALLTYPE *AddRef)(void* This);
+        ULONG (STDMETHODCALLTYPE *Release)(void* This);
+        HRESULT (STDMETHODCALLTYPE *SetSwapChain)(void* This, IDXGISwapChain1* swapChain);
+    } ISwapChainPanelNativeVtbl;
+    typedef struct { ISwapChainPanelNativeVtbl* lpVtbl; } ISwapChainPanelNative;
+
+    ISwapChainPanelNative* panel = (ISwapChainPanelNative*)swap_chain_panel;
+    hr = panel->lpVtbl->SetSwapChain(panel, swap_chain1);
+    if (FAILED(hr)) {
+        OutputDebugStringA("D3D11: ISwapChainPanelNative::SetSwapChain FAILED\n");
+    }
+
+    return dx_finalize(dev, swap_chain1, width, height);
 }
 
 static ID3D11SamplerState* default_sampler = NULL;

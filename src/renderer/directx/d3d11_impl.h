@@ -10,8 +10,10 @@ extern "C" {
 
 typedef struct DxDevice DxDevice;
 
-// Device creation
-DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height);
+// Device creation — HWND mode (raw Win32 window)
+DxDevice* dx_create_for_hwnd(void* hwnd, uint32_t width, uint32_t height);
+// Device creation — Composition mode (WinUI 3 SwapChainPanel)
+DxDevice* dx_create_for_composition(void* hwnd, uint32_t width, uint32_t height, void* swap_chain_panel);
 void dx_destroy(DxDevice* dev);
 
 // Swap chain

@@ -364,6 +364,8 @@ pub const Platform = union(PlatformTag) {
         hdc: ?*anyopaque,
         /// The OpenGL rendering context.
         hglrc: ?*anyopaque,
+        /// ISwapChainPanelNative* for WinUI 3 SwapChainPanel mode (optional).
+        swap_chain_panel: ?*anyopaque,
     } else void;
 
     // The C ABI compatible version of this union. The tag is expected
@@ -381,6 +383,7 @@ pub const Platform = union(PlatformTag) {
             hwnd: ?*anyopaque,
             hdc: ?*anyopaque,
             hglrc: ?*anyopaque,
+            swap_chain_panel: ?*anyopaque,
         },
     };
 
@@ -410,6 +413,7 @@ pub const Platform = union(PlatformTag) {
                     .hwnd = hwnd,
                     .hdc = config.hdc,
                     .hglrc = config.hglrc,
+                    .swap_chain_panel = config.swap_chain_panel,
                 } };
             } else error.UnsupportedPlatform,
         };
