@@ -34,6 +34,13 @@ export fn dx_notify_resize(w: u32, h: u32) void {
     dx.dx_set_window_size(w, h);
 }
 
+/// Set swap chain on a SwapChainPanel. Must be called from UI thread after surface creation.
+/// Returns 0 on success.
+export fn dx_set_panel_swap_chain(swap_chain_panel: ?*anyopaque) i32 {
+    const dev = current_device orelse return -1;
+    return dx.dx_set_swap_chain_on_panel(dev, swap_chain_panel);
+}
+
 /// Use a native Windows render loop instead of xev.
 /// xev's IOCP event loop stalls after D3D11 device creation.
 pub const native_render_loop = true;
@@ -44,6 +51,8 @@ const log = std.log.scoped(.directx);
 pub var current_device: ?*dx.DxDevice = null;
 /// HWND stored from surfaceInit for device creation in threadEnter.
 pub var stored_hwnd: ?*anyopaque = null;
+/// ISwapChainPanelNative* for WinUI 3 mode (optional).
+pub var stored_swap_chain_panel: ?*anyopaque = null;
 
 // C API from d3d11_impl.c — imported via build-system TranslateC for type safety
 pub const dx = @import("d3d11-c");
@@ -65,6 +74,7 @@ pub fn deinit(self: *DirectX) void {
     if (self.device) |dev| dx.dx_destroy(dev);
     current_device = null;
     stored_hwnd = null;
+    stored_swap_chain_panel = null;
     self.* = undefined;
 }
 
@@ -72,6 +82,7 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
     if (comptime builtin.os.tag != .windows) return;
     const hwnd: ?*anyopaque = @ptrCast(surface.platform.windows.hwnd);
     stored_hwnd = hwnd;
+    stored_swap_chain_panel = surface.platform.windows.swap_chain_panel;
 
     // Set initial window size (main thread, safe to call GetClientRect here)
     var rect: windows.exp.RECT = undefined;
@@ -87,15 +98,33 @@ pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void 
     _ = surface;
 }
 
-pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
+const InitError = error{
+    HWNDNotSet,
+    DeviceCreationFailed,
+};
+
+pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) InitError!void {
     _ = surface;
-    const hwnd = stored_hwnd orelse return;
+    const hwnd = stored_hwnd orelse {
+        log.err("HWND not set — surfaceInit was not called before threadEnter", .{});
+        return error.HWNDNotSet;
+    };
     var rect: windows.exp.RECT = undefined;
     _ = windows.exp.user32.GetClientRect(hwnd, &rect);
     const w: u32 = @intCast(@max(rect.right - rect.left, 1));
     const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 
-    const dev = dx.dx_create(hwnd, w, h) orelse return;
+    const use_composition = stored_swap_chain_panel != null;
+    const dev = (if (stored_swap_chain_panel != null)
+        dx.dx_create_for_composition(hwnd, w, h)
+    else
+        dx.dx_create_for_hwnd(hwnd, w, h)) orelse {
+        if (use_composition)
+            log.err("D3D11 device creation failed — CreateSwapChainForComposition or SetSwapChain returned null (invalid ISwapChainPanelNative pointer?)", .{})
+        else
+            log.err("D3D11 device creation failed — CreateSwapChainForHwnd returned null (invalid HWND or unsupported GPU?)", .{});
+        return error.DeviceCreationFailed;
+    };
     const self_mut: *DirectX = @constCast(self);
     self_mut.device = dev;
     current_device = dev;
