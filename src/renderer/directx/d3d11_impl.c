@@ -89,6 +89,11 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     IDXGISwapChain1* swap_chain1 = NULL;
     hr = IDXGIFactory2_CreateSwapChainForHwnd(factory, (IUnknown*)dev->device, dev->hwnd, &scd, NULL, NULL, &swap_chain1);
 
+    // Disable DXGI's automatic Alt+Enter fullscreen handling. The host app
+    // implements fullscreen by toggling Win32 window styles instead, and DXGI
+    // refuses SetFullscreenState on swap chains targeting child windows.
+    IDXGIFactory_MakeWindowAssociation((IDXGIFactory*)factory, dev->hwnd, DXGI_MWA_NO_ALT_ENTER);
+
     IDXGIFactory2_Release(factory);
     IDXGIAdapter_Release(adapter);
     IDXGIDevice_Release(dxgi_device);
