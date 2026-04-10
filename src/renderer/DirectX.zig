@@ -29,9 +29,9 @@ pub const custom_shader_y_is_down = true;
 pub const swap_chain_count = 2;
 
 /// Called from C++ WM_SIZE to update window size without cross-thread deadlock.
-/// Thin wrapper needed because Zig DLL only exports Zig `export fn`, not C functions.
-export fn dx_notify_resize(w: u32, h: u32) void {
-    dx.dx_set_window_size(w, h);
+/// Takes the device pointer so each surface's size is tracked independently.
+export fn dx_notify_resize(dev: ?*dx.DxDevice, w: u32, h: u32) void {
+    dx.dx_set_window_size(dev, w, h);
 }
 
 /// Use a native Windows render loop instead of xev.
@@ -40,10 +40,9 @@ pub const native_render_loop = true;
 
 const log = std.log.scoped(.directx);
 
-/// Global device handle, accessible by Buffer/Texture/etc.
-pub var current_device: ?*dx.DxDevice = null;
-/// HWND stored from surfaceInit for device creation in threadEnter.
-pub var stored_hwnd: ?*anyopaque = null;
+/// Per-thread device handle, accessible by Buffer/Texture/etc.
+/// Each renderer thread sets its own copy in threadEnter.
+pub threadlocal var current_device: ?*dx.DxDevice = null;
 
 // C API from d3d11_impl.c — imported via build-system TranslateC for type safety
 pub const dx = @import("d3d11-c");
@@ -63,23 +62,15 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
 
 pub fn deinit(self: *DirectX) void {
     if (self.device) |dev| dx.dx_destroy(dev);
-    current_device = null;
-    stored_hwnd = null;
+    self.device = null;
+    // Note: current_device is threadlocal, only clear if we're on the renderer thread.
+    // It's safe to leave stale — threadEnter sets it on the next surface.
     self.* = undefined;
 }
 
 pub fn surfaceInit(surface: *apprt.Surface) !void {
-    if (comptime builtin.os.tag != .windows) return;
-    const hwnd: ?*anyopaque = @ptrCast(surface.platform.windows.hwnd);
-    stored_hwnd = hwnd;
-
-    // Set initial window size (main thread, safe to call GetClientRect here)
-    var rect: windows.exp.RECT = undefined;
-    _ = windows.exp.user32.GetClientRect(hwnd, &rect);
-    dx.dx_set_window_size(
-        @intCast(@max(rect.right - rect.left, 1)),
-        @intCast(@max(rect.bottom - rect.top, 1)),
-    );
+    _ = surface;
+    // Device creation and initial window size are handled in threadEnter.
 }
 
 pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void {
@@ -88,17 +79,33 @@ pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void 
 }
 
 pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
-    _ = surface;
-    const hwnd = stored_hwnd orelse return;
+    if (comptime builtin.os.tag != .windows) return;
+    const hwnd: ?*anyopaque = @ptrCast(surface.platform.windows.hwnd);
+    if (hwnd == null) {
+        log.err("HWND not set on surface — surfaceInit was not called", .{});
+        return error.HWNDNotSet;
+    }
+
+    // Destroy any existing device first — DXGI flip-model only allows one
+    // swap chain per HWND, so we must tear down the old one before creating
+    // a new one (e.g. if threadEnter is called again after threadExit).
+    const self_mut: *DirectX = @constCast(self);
+    if (self_mut.device) |old| {
+        dx.dx_destroy(old);
+        self_mut.device = null;
+        current_device = null;
+    }
+
     var rect: windows.exp.RECT = undefined;
     _ = windows.exp.user32.GetClientRect(hwnd, &rect);
     const w: u32 = @intCast(@max(rect.right - rect.left, 1));
     const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 
     const dev = dx.dx_create(hwnd, w, h) orelse return;
-    const self_mut: *DirectX = @constCast(self);
     self_mut.device = dev;
     current_device = dev;
+    // Set initial window size on the newly created device
+    dx.dx_set_window_size(dev, w, h);
 }
 
 pub fn threadExit(self: *const DirectX) void {
@@ -136,7 +143,7 @@ pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
     // Cannot call GetClientRect from renderer thread (cross-thread deadlock).
     var ww: u32 = 0;
     var wh: u32 = 0;
-    dx.dx_get_window_size(&ww, &wh);
+    dx.dx_get_window_size(dev, &ww, &wh);
     if (ww > 0 and wh > 0) {
         var bbw: u32 = 0;
         var bbh: u32 = 0;

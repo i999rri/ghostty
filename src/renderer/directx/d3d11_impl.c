@@ -16,10 +16,6 @@
 
 #include "d3d11_impl.h"
 
-// Thread-safe window size (set by main thread, read by renderer thread)
-static volatile uint32_t g_window_width = 0;
-static volatile uint32_t g_window_height = 0;
-
 // --- Device ---
 
 struct DxDevice {
@@ -30,10 +26,15 @@ struct DxDevice {
     ID3D11BlendState* blend_on;
     ID3D11BlendState* blend_off;
     ID3D11RasterizerState* rasterizer_state;
+    ID3D11SamplerState* default_sampler;
     D3D_FEATURE_LEVEL feature_level;
     HWND hwnd;
     uint32_t bb_width;
     uint32_t bb_height;
+    // Per-device window size (set by main thread via dx_set_window_size,
+    // read by renderer thread). Volatile for cross-thread visibility.
+    volatile uint32_t window_width;
+    volatile uint32_t window_height;
 };
 
 static void dx_create_backbuffer_rtv(DxDevice* dev) {
@@ -146,14 +147,33 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
         ID3D11DeviceContext_RSSetState(dev->context, dev->rasterizer_state);
     }
 
+    // Create default sampler immediately so it's ready for the first draw
+    {
+        D3D11_SAMPLER_DESC sd = {0};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.MaxLOD = D3D11_FLOAT32_MAX;
+        ID3D11Device_CreateSamplerState(dev->device, &sd, &dev->default_sampler);
+        if (dev->default_sampler) {
+            ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &dev->default_sampler);
+        }
+    }
+
     return dev;
 }
 
-static ID3D11SamplerState* default_sampler = NULL;
-
 void dx_destroy(DxDevice* dev) {
     if (!dev) return;
-    if (default_sampler) { ID3D11SamplerState_Release(default_sampler); default_sampler = NULL; }
+    // ClearState + Flush trigger deferred destruction of DXGI flip-model
+    // swap chains. Without this, creating a new swap chain on the same HWND
+    // will fail with DXGI ERROR #297.
+    if (dev->context) {
+        ID3D11DeviceContext_ClearState(dev->context);
+        ID3D11DeviceContext_Flush(dev->context);
+    }
+    if (dev->default_sampler) ID3D11SamplerState_Release(dev->default_sampler);
     if (dev->rasterizer_state) ID3D11RasterizerState_Release(dev->rasterizer_state);
     if (dev->blend_off) ID3D11BlendState_Release(dev->blend_off);
     if (dev->blend_on) ID3D11BlendState_Release(dev->blend_on);
@@ -225,16 +245,19 @@ void dx_clear_shader_resources(DxDevice* dev) {
 }
 
 void dx_ensure_default_sampler(DxDevice* dev) {
-    if (!dev || default_sampler) return;
-    D3D11_SAMPLER_DESC sd = {0};
-    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sd.MaxLOD = D3D11_FLOAT32_MAX;
-    ID3D11Device_CreateSamplerState(dev->device, &sd, &default_sampler);
-    if (default_sampler) {
-        ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &default_sampler);
+    if (!dev) return;
+    // Create once per device, but always re-bind — pipeline state changes can unbind it.
+    if (!dev->default_sampler) {
+        D3D11_SAMPLER_DESC sd = {0};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.MaxLOD = D3D11_FLOAT32_MAX;
+        ID3D11Device_CreateSamplerState(dev->device, &sd, &dev->default_sampler);
+    }
+    if (dev->default_sampler) {
+        ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &dev->default_sampler);
     }
 }
 
@@ -453,6 +476,10 @@ void dx_bind_pipeline(DxDevice* dev, DxPipeline* pipe) {
     ID3D11DeviceContext_VSSetShader(dev->context, pipe->vs, NULL, 0);
     ID3D11DeviceContext_PSSetShader(dev->context, pipe->ps, NULL, 0);
     ID3D11DeviceContext_IASetInputLayout(dev->context, pipe->input_layout); // NULL is OK for vertex-less draws
+    // Re-bind default sampler — shader switch can invalidate sampler state
+    if (dev->default_sampler) {
+        ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &dev->default_sampler);
+    }
 }
 
 // --- Render Target ---
@@ -614,13 +641,20 @@ DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode,
 
 // --- Window resize notification ---
 
-void dx_set_window_size(uint32_t width, uint32_t height) {
-    g_window_width = width;
-    g_window_height = height;
+void dx_set_window_size(DxDevice* dev, uint32_t width, uint32_t height) {
+    if (dev) {
+        dev->window_width = width;
+        dev->window_height = height;
+    }
 }
 
-void dx_get_window_size(uint32_t* width, uint32_t* height) {
-    *width = g_window_width;
-    *height = g_window_height;
+void dx_get_window_size(DxDevice* dev, uint32_t* width, uint32_t* height) {
+    if (dev) {
+        *width = dev->window_width;
+        *height = dev->window_height;
+    } else {
+        *width = 0;
+        *height = 0;
+    }
 }
 

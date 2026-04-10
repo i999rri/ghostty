@@ -1592,6 +1592,17 @@ pub const CAPI = struct {
         return surface.userdata;
     }
 
+    /// Returns the DirectX device pointer for per-surface resize notification.
+    /// Returns null on non-DirectX backends.
+    export fn ghostty_surface_dx_device(surface: *Surface) ?*anyopaque {
+        if (comptime @hasField(@TypeOf(surface.core_surface.renderer.api), "device")) {
+            if (surface.core_surface.renderer.api.device) |dev| {
+                return @ptrCast(dev);
+            }
+        }
+        return null;
+    }
+
     /// Returns the app associated with a surface.
     export fn ghostty_surface_app(surface: *Surface) *App {
         return surface.app;
