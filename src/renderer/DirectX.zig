@@ -34,6 +34,12 @@ export fn dx_notify_resize(dev: ?*dx.DxDevice, w: u32, h: u32) void {
     dx.dx_set_window_size(dev, w, h);
 }
 
+/// Called from C++ to show/hide a surface's DirectComposition visual (tab switching).
+/// Safe to call from main thread while the renderer is active on another thread.
+export fn dx_set_surface_visible(dev: ?*dx.DxDevice, visible: bool) void {
+    dx.dx_set_visible(dev, visible);
+}
+
 /// Use a native Windows render loop instead of xev.
 /// xev's IOCP event loop stalls after D3D11 device creation.
 pub const native_render_loop = true;

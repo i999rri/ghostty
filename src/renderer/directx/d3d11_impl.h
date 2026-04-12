@@ -94,6 +94,9 @@ DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode,
 void dx_set_window_size(DxDevice* dev, uint32_t width, uint32_t height);
 void dx_get_window_size(DxDevice* dev, uint32_t* width, uint32_t* height);
 
+// DirectComposition visibility control (safe to call while renderer is active)
+void dx_set_visible(DxDevice* dev, bool visible);
+
 #ifdef __cplusplus
 }
 #endif
