@@ -831,6 +831,15 @@ pub const Surface = struct {
             .height = height,
         };
 
+        // Notify the graphics API synchronously from this (main) thread.
+        // DirectX uses this so the renderer thread picks up the new
+        // window size on the very next frame, without the asynchronous
+        // round trip through the renderer thread mailbox.
+        const Api = @TypeOf(self.core_surface.renderer.api);
+        if (comptime @hasDecl(Api, "notifyResize")) {
+            self.core_surface.renderer.api.notifyResize(width, height);
+        }
+
         // Call the primary callback.
         self.core_surface.sizeCallback(self.size) catch |err| {
             log.err("error in size callback err={}", .{err});

@@ -37,12 +37,12 @@ pub fn setVisible(self: *DirectX, visible: bool) void {
     dx.dx_set_visible(dev, visible);
 }
 
-/// Called by the renderer when the screen size changes. Stores the new
-/// window size on the device so surfaceSize() picks it up next frame.
-/// Safe to call from the renderer thread.
+/// Called from the apprt updateSize path (main thread) to update the
+/// device's window size synchronously. This avoids the renderer thread
+/// needing to do a cross-thread GetClientRect on the HWND.
+/// Writes an atomic field; safe from any thread.
 pub fn notifyResize(self: *DirectX, w: u32, h: u32) void {
-    _ = self;
-    const dev = current_device orelse return;
+    const dev = self.device orelse return;
     dx.dx_set_window_size(dev, w, h);
 }
 

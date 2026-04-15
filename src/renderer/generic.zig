@@ -1934,13 +1934,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             self.updateScreenSizeUniforms();
 
-            // Forward raw pixel size to the graphics API if it has a hook.
-            // (DirectX uses this so the renderer thread can pick up the new
-            // window size without calling GetClientRect cross-thread.)
-            if (comptime @hasDecl(GraphicsAPI, "notifyResize")) {
-                self.api.notifyResize(size.screen.width, size.screen.height);
-            }
-
             log.debug("screen size size={}", .{size});
         }
 
