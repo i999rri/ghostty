@@ -831,6 +831,15 @@ pub const Surface = struct {
             .height = height,
         };
 
+        // Notify the graphics API synchronously from this (main) thread.
+        // DirectX uses this so the renderer thread picks up the new
+        // window size on the very next frame, without the asynchronous
+        // round trip through the renderer thread mailbox.
+        const Api = @TypeOf(self.core_surface.renderer.api);
+        if (comptime @hasDecl(Api, "notifyResize")) {
+            self.core_surface.renderer.api.notifyResize(width, height);
+        }
+
         // Call the primary callback.
         self.core_surface.sizeCallback(self.size) catch |err| {
             log.err("error in size callback err={}", .{err});
@@ -1590,17 +1599,6 @@ pub const CAPI = struct {
     /// Returns the userdata associated with the surface.
     export fn ghostty_surface_userdata(surface: *Surface) ?*anyopaque {
         return surface.userdata;
-    }
-
-    /// Returns the DirectX device pointer for per-surface resize notification.
-    /// Returns null on non-DirectX backends.
-    export fn ghostty_surface_dx_device(surface: *Surface) ?*anyopaque {
-        if (comptime @hasField(@TypeOf(surface.core_surface.renderer.api), "device")) {
-            if (surface.core_surface.renderer.api.device) |dev| {
-                return @ptrCast(dev);
-            }
-        }
-        return null;
     }
 
     /// Returns the app associated with a surface.

@@ -28,16 +28,22 @@ pub const custom_shader_target: shadertoy.Target = .glsl;
 pub const custom_shader_y_is_down = true;
 pub const swap_chain_count = 2;
 
-/// Called from C++ WM_SIZE to update window size without cross-thread deadlock.
-/// Takes the device pointer so each surface's size is tracked independently.
-export fn dx_notify_resize(dev: ?*dx.DxDevice, w: u32, h: u32) void {
-    dx.dx_set_window_size(dev, w, h);
+/// Called by the renderer when occlusion changes. Toggles the
+/// DirectComposition visual so the GPU can stop compositing hidden surfaces.
+/// Safe to call from the renderer thread.
+pub fn setVisible(self: *DirectX, visible: bool) void {
+    _ = self;
+    const dev = current_device orelse return;
+    dx.dx_set_visible(dev, visible);
 }
 
-/// Called from C++ to show/hide a surface's DirectComposition visual (tab switching).
-/// Safe to call from main thread while the renderer is active on another thread.
-export fn dx_set_surface_visible(dev: ?*dx.DxDevice, visible: bool) void {
-    dx.dx_set_visible(dev, visible);
+/// Called from the apprt updateSize path (main thread) to update the
+/// device's window size synchronously. This avoids the renderer thread
+/// needing to do a cross-thread GetClientRect on the HWND.
+/// Writes an atomic field; safe from any thread.
+pub fn notifyResize(self: *DirectX, w: u32, h: u32) void {
+    const dev = self.device orelse return;
+    dx.dx_set_window_size(dev, w, h);
 }
 
 /// Use a native Windows render loop instead of xev.

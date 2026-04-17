@@ -1062,6 +1062,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     display_link.stop() catch {};
                 }
             }
+
+            // Forward to the graphics API if it has a setVisible hook.
+            // (Used by DirectX to toggle DirectComposition visual visibility.)
+            if (comptime @hasDecl(GraphicsAPI, "setVisible")) {
+                self.api.setVisible(visible);
+            }
         }
 
         /// Set the new font grid.
