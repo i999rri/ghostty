@@ -9,16 +9,84 @@
 #include <d3dcompiler.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
-
+// dcomp.h is C++-only; declare the minimal DirectComposition interfaces in C.
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "dcomp.lib")
+
+DEFINE_GUID(IID_IDCompositionDevice,  0xC37EA93A, 0xE7AA, 0x450D, 0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3);
+
+// Minimal IDCompositionVisual vtable (only SetContent + Release needed).
+// Each C++ overload occupies its own vtable slot.
+typedef struct IDCompositionVisual IDCompositionVisual;
+typedef struct IDCompositionVisualVtbl {
+    // IUnknown (slots 0-2)
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDCompositionVisual*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(IDCompositionVisual*);
+    ULONG   (STDMETHODCALLTYPE *Release)(IDCompositionVisual*);
+    // SetOffsetX: 2 overloads (animation, float) — slots 3-4
+    void* _SetOffsetX_anim;
+    void* _SetOffsetX_float;
+    // SetOffsetY: 2 overloads — slots 5-6
+    void* _SetOffsetY_anim;
+    void* _SetOffsetY_float;
+    // SetTransform: 2 overloads — slots 7-8
+    void* _SetTransform_obj;
+    void* _SetTransform_matrix;
+    // SetTransformParent — slot 9
+    void* _SetTransformParent;
+    // SetEffect — slot 10
+    void* _SetEffect;
+    // SetBitmapInterpolationMode — slot 11
+    void* _SetBitmapInterpolationMode;
+    // SetBorderMode — slot 12
+    void* _SetBorderMode;
+    // SetClip: 2 overloads — slots 13-14
+    void* _SetClip_obj;
+    void* _SetClip_rect;
+    // SetContent — slot 15
+    HRESULT (STDMETHODCALLTYPE *SetContent)(IDCompositionVisual*, IUnknown*);
+} IDCompositionVisualVtbl;
+struct IDCompositionVisual { IDCompositionVisualVtbl* lpVtbl; };
+
+// Minimal IDCompositionTarget vtable (only SetRoot + Release needed)
+typedef struct IDCompositionTarget IDCompositionTarget;
+typedef struct IDCompositionTargetVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDCompositionTarget*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(IDCompositionTarget*);
+    ULONG   (STDMETHODCALLTYPE *Release)(IDCompositionTarget*);
+    HRESULT (STDMETHODCALLTYPE *SetRoot)(IDCompositionTarget*, IDCompositionVisual*);
+} IDCompositionTargetVtbl;
+struct IDCompositionTarget { IDCompositionTargetVtbl* lpVtbl; };
+
+// Minimal IDCompositionDevice vtable
+typedef struct IDCompositionDevice IDCompositionDevice;
+typedef struct IDCompositionDeviceVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDCompositionDevice*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(IDCompositionDevice*);
+    ULONG   (STDMETHODCALLTYPE *Release)(IDCompositionDevice*);
+    HRESULT (STDMETHODCALLTYPE *Commit)(IDCompositionDevice*);
+    HRESULT (STDMETHODCALLTYPE *WaitForCommitCompletion)(IDCompositionDevice*);
+    HRESULT (STDMETHODCALLTYPE *GetFrameStatistics)(IDCompositionDevice*, void*);
+    HRESULT (STDMETHODCALLTYPE *CreateTargetForHwnd)(IDCompositionDevice*, HWND, BOOL, IDCompositionTarget**);
+    HRESULT (STDMETHODCALLTYPE *CreateVisual)(IDCompositionDevice*, IDCompositionVisual**);
+} IDCompositionDeviceVtbl;
+struct IDCompositionDevice { IDCompositionDeviceVtbl* lpVtbl; };
+
+// DCompositionCreateDevice is a flat C export from dcomp.dll
+HRESULT WINAPI DCompositionCreateDevice(IDXGIDevice*, REFIID, void**);
+
+#define IDCompositionDevice_CreateTargetForHwnd(p,a,b,c) (p)->lpVtbl->CreateTargetForHwnd(p,a,b,c)
+#define IDCompositionDevice_CreateVisual(p,a)            (p)->lpVtbl->CreateVisual(p,a)
+#define IDCompositionDevice_Commit(p)                    (p)->lpVtbl->Commit(p)
+#define IDCompositionDevice_Release(p)                   (p)->lpVtbl->Release(p)
+#define IDCompositionTarget_SetRoot(p,a)                 (p)->lpVtbl->SetRoot(p,a)
+#define IDCompositionTarget_Release(p)                   (p)->lpVtbl->Release(p)
+#define IDCompositionVisual_SetContent(p,a)              (p)->lpVtbl->SetContent(p,a)
+#define IDCompositionVisual_Release(p)                   (p)->lpVtbl->Release(p)
 
 #include "d3d11_impl.h"
-
-// Thread-safe window size (set by main thread, read by renderer thread)
-static volatile uint32_t g_window_width = 0;
-static volatile uint32_t g_window_height = 0;
 
 // --- Device ---
 
@@ -30,10 +98,18 @@ struct DxDevice {
     ID3D11BlendState* blend_on;
     ID3D11BlendState* blend_off;
     ID3D11RasterizerState* rasterizer_state;
+    ID3D11SamplerState* default_sampler;
+    IDCompositionDevice* dcomp_device;
+    IDCompositionTarget* dcomp_target;
+    IDCompositionVisual* dcomp_visual;
     D3D_FEATURE_LEVEL feature_level;
     HWND hwnd;
     uint32_t bb_width;
     uint32_t bb_height;
+    // Per-device window size (set by main thread via dx_set_window_size,
+    // read by renderer thread). Volatile for cross-thread visibility.
+    volatile uint32_t window_width;
+    volatile uint32_t window_height;
 };
 
 static void dx_create_backbuffer_rtv(DxDevice* dev) {
@@ -68,7 +144,9 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
         return NULL;
     }
 
-    // Create swap chain via DXGI 1.2 for DXGI_SCALING_NONE (prevents DWM stretching on resize)
+    // Create swap chain for composition (not bound to HWND directly).
+    // This allows DirectComposition to control visibility without crashing
+    // the D3D driver when a surface is hidden during tab switching.
     IDXGIDevice* dxgi_device = NULL;
     IDXGIAdapter* adapter = NULL;
     IDXGIFactory2* factory = NULL;
@@ -84,22 +162,42 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = 2;
     scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    scd.Scaling = DXGI_SCALING_NONE;
+    scd.Scaling = DXGI_SCALING_STRETCH;
+    scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
     IDXGISwapChain1* swap_chain1 = NULL;
-    hr = IDXGIFactory2_CreateSwapChainForHwnd(factory, (IUnknown*)dev->device, dev->hwnd, &scd, NULL, NULL, &swap_chain1);
+    hr = IDXGIFactory2_CreateSwapChainForComposition(factory, (IUnknown*)dev->device, &scd, NULL, &swap_chain1);
 
     IDXGIFactory2_Release(factory);
     IDXGIAdapter_Release(adapter);
-    IDXGIDevice_Release(dxgi_device);
 
     if (FAILED(hr) || !swap_chain1) {
-        OutputDebugStringA("D3D11: CreateSwapChainForHwnd FAILED\n");
+        OutputDebugStringA("D3D11: CreateSwapChainForComposition FAILED\n");
+        IDXGIDevice_Release(dxgi_device);
         ID3D11DeviceContext_Release(dev->context);
         ID3D11Device_Release(dev->device);
         free(dev);
         return NULL;
     }
+
+    // Set up DirectComposition: visual tree routes the swap chain to the HWND.
+    // Visibility is controlled by attaching/detaching the visual root.
+    hr = DCompositionCreateDevice((IDXGIDevice*)dxgi_device, &IID_IDCompositionDevice, (void**)&dev->dcomp_device);
+    IDXGIDevice_Release(dxgi_device);
+    if (FAILED(hr)) {
+        OutputDebugStringA("D3D11: DCompositionCreateDevice FAILED\n");
+        IDXGISwapChain1_Release(swap_chain1);
+        ID3D11DeviceContext_Release(dev->context);
+        ID3D11Device_Release(dev->device);
+        free(dev);
+        return NULL;
+    }
+
+    IDCompositionDevice_CreateTargetForHwnd(dev->dcomp_device, dev->hwnd, TRUE, &dev->dcomp_target);
+    IDCompositionDevice_CreateVisual(dev->dcomp_device, &dev->dcomp_visual);
+    IDCompositionVisual_SetContent(dev->dcomp_visual, (IUnknown*)swap_chain1);
+    IDCompositionTarget_SetRoot(dev->dcomp_target, dev->dcomp_visual);
+    IDCompositionDevice_Commit(dev->dcomp_device);
 
     // Get IDXGISwapChain from IDXGISwapChain1
     IDXGISwapChain1_QueryInterface(swap_chain1, &IID_IDXGISwapChain, (void**)&dev->swap_chain);
@@ -141,14 +239,36 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
         ID3D11DeviceContext_RSSetState(dev->context, dev->rasterizer_state);
     }
 
+    // Create default sampler immediately so it's ready for the first draw
+    {
+        D3D11_SAMPLER_DESC sd = {0};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.MaxLOD = D3D11_FLOAT32_MAX;
+        ID3D11Device_CreateSamplerState(dev->device, &sd, &dev->default_sampler);
+        if (dev->default_sampler) {
+            ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &dev->default_sampler);
+        }
+    }
+
     return dev;
 }
 
-static ID3D11SamplerState* default_sampler = NULL;
-
 void dx_destroy(DxDevice* dev) {
     if (!dev) return;
-    if (default_sampler) { ID3D11SamplerState_Release(default_sampler); default_sampler = NULL; }
+    // ClearState + Flush trigger deferred destruction of DXGI flip-model
+    // swap chains. Without this, creating a new swap chain on the same HWND
+    // will fail with DXGI ERROR #297.
+    if (dev->context) {
+        ID3D11DeviceContext_ClearState(dev->context);
+        ID3D11DeviceContext_Flush(dev->context);
+    }
+    if (dev->dcomp_visual) IDCompositionVisual_Release(dev->dcomp_visual);
+    if (dev->dcomp_target) IDCompositionTarget_Release(dev->dcomp_target);
+    if (dev->dcomp_device) IDCompositionDevice_Release(dev->dcomp_device);
+    if (dev->default_sampler) ID3D11SamplerState_Release(dev->default_sampler);
     if (dev->rasterizer_state) ID3D11RasterizerState_Release(dev->rasterizer_state);
     if (dev->blend_off) ID3D11BlendState_Release(dev->blend_off);
     if (dev->blend_on) ID3D11BlendState_Release(dev->blend_on);
@@ -220,16 +340,19 @@ void dx_clear_shader_resources(DxDevice* dev) {
 }
 
 void dx_ensure_default_sampler(DxDevice* dev) {
-    if (!dev || default_sampler) return;
-    D3D11_SAMPLER_DESC sd = {0};
-    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sd.MaxLOD = D3D11_FLOAT32_MAX;
-    ID3D11Device_CreateSamplerState(dev->device, &sd, &default_sampler);
-    if (default_sampler) {
-        ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &default_sampler);
+    if (!dev) return;
+    // Create once per device, but always re-bind — pipeline state changes can unbind it.
+    if (!dev->default_sampler) {
+        D3D11_SAMPLER_DESC sd = {0};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.MaxLOD = D3D11_FLOAT32_MAX;
+        ID3D11Device_CreateSamplerState(dev->device, &sd, &dev->default_sampler);
+    }
+    if (dev->default_sampler) {
+        ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &dev->default_sampler);
     }
 }
 
@@ -448,6 +571,10 @@ void dx_bind_pipeline(DxDevice* dev, DxPipeline* pipe) {
     ID3D11DeviceContext_VSSetShader(dev->context, pipe->vs, NULL, 0);
     ID3D11DeviceContext_PSSetShader(dev->context, pipe->ps, NULL, 0);
     ID3D11DeviceContext_IASetInputLayout(dev->context, pipe->input_layout); // NULL is OK for vertex-less draws
+    // Re-bind default sampler — shader switch can invalidate sampler state
+    if (dev->default_sampler) {
+        ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &dev->default_sampler);
+    }
 }
 
 // --- Render Target ---
@@ -609,13 +736,28 @@ DxPipeline* dx_create_cell_text_pipeline(DxDevice* dev, const void* vs_bytecode,
 
 // --- Window resize notification ---
 
-void dx_set_window_size(uint32_t width, uint32_t height) {
-    g_window_width = width;
-    g_window_height = height;
+void dx_set_window_size(DxDevice* dev, uint32_t width, uint32_t height) {
+    if (dev) {
+        dev->window_width = width;
+        dev->window_height = height;
+    }
 }
 
-void dx_get_window_size(uint32_t* width, uint32_t* height) {
-    *width = g_window_width;
-    *height = g_window_height;
+void dx_get_window_size(DxDevice* dev, uint32_t* width, uint32_t* height) {
+    if (dev) {
+        *width = dev->window_width;
+        *height = dev->window_height;
+    } else {
+        *width = 0;
+        *height = 0;
+    }
+}
+
+// --- DirectComposition visibility ---
+
+void dx_set_visible(DxDevice* dev, bool visible) {
+    if (!dev || !dev->dcomp_target) return;
+    IDCompositionTarget_SetRoot(dev->dcomp_target, visible ? dev->dcomp_visual : NULL);
+    IDCompositionDevice_Commit(dev->dcomp_device);
 }
 
