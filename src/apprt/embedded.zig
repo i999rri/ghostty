@@ -364,6 +364,12 @@ pub const Platform = union(PlatformTag) {
         hdc: ?*anyopaque,
         /// The OpenGL rendering context.
         hglrc: ?*anyopaque,
+        /// External D3D11 device (ID3D11Device*) for SwapChainPanel mode.
+        /// When set, ghostty uses this device instead of creating its own.
+        d3d_device: ?*anyopaque = null,
+        /// External swap chain (IDXGISwapChain1*) for SwapChainPanel mode.
+        /// When set, ghostty renders into this swap chain.
+        swap_chain: ?*anyopaque = null,
     } else void;
 
     // The C ABI compatible version of this union. The tag is expected
@@ -381,6 +387,8 @@ pub const Platform = union(PlatformTag) {
             hwnd: ?*anyopaque,
             hdc: ?*anyopaque,
             hglrc: ?*anyopaque,
+            d3d_device: ?*anyopaque,
+            swap_chain: ?*anyopaque,
         },
     };
 
@@ -410,6 +418,8 @@ pub const Platform = union(PlatformTag) {
                     .hwnd = hwnd,
                     .hdc = config.hdc,
                     .hglrc = config.hglrc,
+                    .d3d_device = config.d3d_device,
+                    .swap_chain = config.swap_chain,
                 } };
             } else error.UnsupportedPlatform,
         };

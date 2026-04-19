@@ -256,6 +256,74 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     return dev;
 }
 
+DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint32_t width, uint32_t height) {
+    if (!d3d_device || !swap_chain_ptr) return NULL;
+
+    DxDevice* dev = (DxDevice*)calloc(1, sizeof(DxDevice));
+    if (!dev) return NULL;
+
+    // Borrow device and swap chain — AddRef since DxDevice will Release on destroy
+    dev->device = (ID3D11Device*)d3d_device;
+    ID3D11Device_AddRef(dev->device);
+    ID3D11Device_GetImmediateContext(dev->device, &dev->context);
+
+    IDXGISwapChain1* sc1 = (IDXGISwapChain1*)swap_chain_ptr;
+    IDXGISwapChain1_QueryInterface(sc1, &IID_IDXGISwapChain, (void**)&dev->swap_chain);
+
+    dev->feature_level = ID3D11Device_GetFeatureLevel(dev->device);
+    // No DirectComposition — SwapChainPanel manages composition
+
+#ifndef NDEBUG
+    OutputDebugStringA("D3D11: Device created from external swap chain\n");
+#endif
+
+    dx_create_backbuffer_rtv(dev);
+    dev->bb_width = width;
+    dev->bb_height = height;
+
+    // Blend states
+    D3D11_BLEND_DESC bd = {0};
+    bd.RenderTarget[0].BlendEnable = TRUE;
+    bd.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    ID3D11Device_CreateBlendState(dev->device, &bd, &dev->blend_on);
+
+    bd.RenderTarget[0].BlendEnable = FALSE;
+    ID3D11Device_CreateBlendState(dev->device, &bd, &dev->blend_off);
+
+    // Rasterizer
+    D3D11_RASTERIZER_DESC rd = {0};
+    rd.FillMode = D3D11_FILL_SOLID;
+    rd.CullMode = D3D11_CULL_NONE;
+    rd.FrontCounterClockwise = FALSE;
+    rd.DepthClipEnable = TRUE;
+    ID3D11Device_CreateRasterizerState(dev->device, &rd, &dev->rasterizer_state);
+    if (dev->rasterizer_state) {
+        ID3D11DeviceContext_RSSetState(dev->context, dev->rasterizer_state);
+    }
+
+    // Default sampler
+    {
+        D3D11_SAMPLER_DESC sd = {0};
+        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sd.MaxLOD = D3D11_FLOAT32_MAX;
+        ID3D11Device_CreateSamplerState(dev->device, &sd, &dev->default_sampler);
+        if (dev->default_sampler) {
+            ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &dev->default_sampler);
+        }
+    }
+
+    return dev;
+}
+
 void dx_destroy(DxDevice* dev) {
     if (!dev) return;
     // ClearState + Flush trigger deferred destruction of DXGI flip-model

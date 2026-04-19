@@ -12,6 +12,9 @@ typedef struct DxDevice DxDevice;
 
 // Device creation
 DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height);
+// Create device from externally-owned swap chain (for SwapChainPanel).
+// The device/swap_chain are borrowed — caller retains ownership.
+DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain, uint32_t width, uint32_t height);
 void dx_destroy(DxDevice* dev);
 
 // Swap chain

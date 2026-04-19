@@ -120,10 +120,16 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     const w: u32 = @intCast(@max(rect.right - rect.left, 1));
     const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 
-    const dev = dx.dx_create(hwnd, w, h) orelse return;
+    // Use external device + swap chain if provided (SwapChainPanel mode),
+    // otherwise create our own (DirectComposition / legacy HWND mode).
+    const platform = surface.platform.windows;
+    const dev = if (platform.d3d_device != null and platform.swap_chain != null)
+        dx.dx_create_from_swap_chain(platform.d3d_device, platform.swap_chain, w, h)
+    else
+        dx.dx_create(hwnd, w, h);
+    if (dev == null) return;
     self_mut.device = dev;
     current_device = dev;
-    // Set initial window size on the newly created device
     dx.dx_set_window_size(dev, w, h);
 }
 
