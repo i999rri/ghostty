@@ -309,6 +309,17 @@ void dx_present(DxDevice* dev, bool vsync) {
     IDXGISwapChain_Present(dev->swap_chain, vsync ? 1 : 0, 0);
 }
 
+void* dx_get_swap_chain(DxDevice* dev) {
+    if (!dev || !dev->swap_chain) return NULL;
+    // Return IDXGISwapChain1* via QueryInterface
+    IDXGISwapChain1* sc1 = NULL;
+    HRESULT hr = IDXGISwapChain_QueryInterface(dev->swap_chain, &IID_IDXGISwapChain1, (void**)&sc1);
+    if (FAILED(hr)) return NULL;
+    // Release the extra ref — caller borrows, does NOT own
+    IDXGISwapChain1_Release(sc1);
+    return sc1;
+}
+
 void dx_clear(DxDevice* dev, float r, float g, float b, float a) {
     if (!dev || !dev->backbuffer_rtv) return;
     float color[4] = { r, g, b, a };

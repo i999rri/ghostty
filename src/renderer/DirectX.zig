@@ -37,6 +37,13 @@ pub fn setVisible(self: *DirectX, visible: bool) void {
     dx.dx_set_visible(dev, visible);
 }
 
+/// Returns the IDXGISwapChain1* for SwapChainPanel integration.
+/// Returns null if no device exists. Caller does NOT own the reference.
+pub fn getSwapChain(self: *DirectX) ?*anyopaque {
+    const dev = self.device orelse return null;
+    return dx.dx_get_swap_chain(dev);
+}
+
 /// Called from the apprt updateSize path (main thread) to update the
 /// device's window size synchronously. This avoids the renderer thread
 /// needing to do a cross-thread GetClientRect on the HWND.

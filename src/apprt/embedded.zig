@@ -1601,6 +1601,16 @@ pub const CAPI = struct {
         return surface.userdata;
     }
 
+    /// Returns the DirectX swap chain (IDXGISwapChain1*) for SwapChainPanel integration.
+    /// Returns null on non-DirectX backends or if the device is not yet created.
+    export fn ghostty_surface_swap_chain(surface: *Surface) ?*anyopaque {
+        const Api = @TypeOf(surface.core_surface.renderer.api);
+        if (comptime @hasDecl(Api, "getSwapChain")) {
+            return surface.core_surface.renderer.api.getSwapChain();
+        }
+        return null;
+    }
+
     /// Returns the app associated with a surface.
     export fn ghostty_surface_app(surface: *Surface) *App {
         return surface.app;

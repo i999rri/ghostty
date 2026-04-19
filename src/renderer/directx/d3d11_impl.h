@@ -17,6 +17,9 @@ void dx_destroy(DxDevice* dev);
 // Swap chain
 void dx_resize(DxDevice* dev, uint32_t width, uint32_t height);
 void dx_present(DxDevice* dev, bool vsync);
+// Returns the IDXGISwapChain1* for SwapChainPanel integration.
+// Caller must NOT release — ownership stays with DxDevice.
+void* dx_get_swap_chain(DxDevice* dev);
 
 // Frame operations
 void dx_clear(DxDevice* dev, float r, float g, float b, float a);
