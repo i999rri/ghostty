@@ -32,8 +32,7 @@ pub const swap_chain_count = 2;
 /// DirectComposition visual so the GPU can stop compositing hidden surfaces.
 /// Safe to call from the renderer thread.
 pub fn setVisible(self: *DirectX, visible: bool) void {
-    _ = self;
-    const dev = current_device orelse return;
+    const dev = self.device orelse return;
     dx.dx_set_visible(dev, visible);
 }
 
@@ -142,8 +141,8 @@ pub fn displayRealized(self: *const DirectX) void {
 }
 
 pub fn drawFrameStart(self: *DirectX) void {
-    _ = self;
-    const dev = current_device orelse return;
+    const dev = self.device orelse return;
+    current_device = dev; // sync for Buffer/Texture/Sampler
     var w: u32 = 0;
     var h: u32 = 0;
     dx.dx_get_backbuffer_size(dev, &w, &h);
@@ -155,14 +154,12 @@ pub fn drawFrameStart(self: *DirectX) void {
 }
 
 pub fn drawFrameEnd(self: *DirectX) void {
-    _ = self;
-    const dev = current_device orelse return;
+    const dev = self.device orelse return;
     dx.dx_present(dev, false);
 }
 
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
-    _ = self;
-    const dev = current_device orelse return .{ .width = 960, .height = 640 };
+    const dev = self.device orelse return .{ .width = 960, .height = 640 };
 
     // Read window size set by main thread (WM_SIZE → dx_notify_resize).
     // Cannot call GetClientRect from renderer thread (cross-thread deadlock).
