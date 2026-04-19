@@ -5,6 +5,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define INITGUID
 #include <windows.h>
+#include <stdio.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dxgi.h>
@@ -256,6 +257,8 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     return dev;
 }
 
+static int present_count = 0;
+
 DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint32_t width, uint32_t height) {
     if (!d3d_device || !swap_chain_ptr) return NULL;
 
@@ -274,12 +277,31 @@ DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint
     // No DirectComposition — SwapChainPanel manages composition
 
 #ifndef NDEBUG
-    OutputDebugStringA("D3D11: Device created from external swap chain\n");
+    {
+        DXGI_SWAP_CHAIN_DESC desc = {0};
+        IDXGISwapChain_GetDesc(dev->swap_chain, &desc);
+        char buf[256];
+        sprintf(buf, "D3D11: External swap chain: %ux%u fmt=%u buffers=%u swap=%u hwnd=%p\n",
+            desc.BufferDesc.Width, desc.BufferDesc.Height,
+            desc.BufferDesc.Format, desc.BufferCount, desc.SwapEffect,
+            (void*)desc.OutputWindow);
+        OutputDebugStringA(buf);
+    }
 #endif
+    present_count = 0;
 
     dx_create_backbuffer_rtv(dev);
     dev->bb_width = width;
     dev->bb_height = height;
+
+#ifndef NDEBUG
+    {
+        char buf[128];
+        sprintf(buf, "D3D11: Backbuffer RTV: %p, context: %p\n",
+            (void*)dev->backbuffer_rtv, (void*)dev->context);
+        OutputDebugStringA(buf);
+    }
+#endif
 
     // Blend states
     D3D11_BLEND_DESC bd = {0};
@@ -373,8 +395,44 @@ void dx_resize(DxDevice* dev, uint32_t width, uint32_t height) {
 }
 
 void dx_present(DxDevice* dev, bool vsync) {
-    if (!dev) return;
-    IDXGISwapChain_Present(dev->swap_chain, vsync ? 1 : 0, 0);
+    if (!dev || !dev->swap_chain) return;
+
+    present_count++;
+
+#ifndef NDEBUG
+    if (present_count <= 5) {
+        DXGI_SWAP_CHAIN_DESC desc = {0};
+        IDXGISwapChain_GetDesc(dev->swap_chain, &desc);
+        char buf[256];
+        sprintf(buf, "D3D11: Present #%d: %ux%u fmt=%u buffers=%u swap=%u flags=0x%x rtv=%p ctx=%p\n",
+            present_count, desc.BufferDesc.Width, desc.BufferDesc.Height,
+            desc.BufferDesc.Format, desc.BufferCount, desc.SwapEffect,
+            desc.Flags, (void*)dev->backbuffer_rtv, (void*)dev->context);
+        OutputDebugStringA(buf);
+    }
+#endif
+
+    __try {
+        HRESULT hr = IDXGISwapChain_Present(dev->swap_chain, vsync ? 1 : 0, 0);
+        if (FAILED(hr)) {
+#ifndef NDEBUG
+            char buf[128];
+            sprintf(buf, "D3D11: Present #%d failed: hr=0x%08X\n", present_count, (unsigned)hr);
+            OutputDebugStringA(buf);
+#endif
+            if (hr == DXGI_ERROR_DEVICE_REMOVED) {
+                HRESULT reason = ID3D11Device_GetDeviceRemovedReason(dev->device);
+                char buf2[128];
+                sprintf(buf2, "D3D11: Device removed reason: 0x%08X\n", (unsigned)reason);
+                OutputDebugStringA(buf2);
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        char buf[128];
+        sprintf(buf, "D3D11: CRASH in Present #%d! Exception code: 0x%08lX\n",
+            present_count, GetExceptionCode());
+        OutputDebugStringA(buf);
+    }
 }
 
 void* dx_get_swap_chain(DxDevice* dev) {
