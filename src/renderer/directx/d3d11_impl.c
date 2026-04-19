@@ -7,13 +7,11 @@
 #include <windows.h>
 #include <stdio.h>
 #include <d3d11.h>
-#include <d3dcompiler.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
 // dcomp.h is C++-only; declare the minimal DirectComposition interfaces in C.
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dcomp.lib")
 
 DEFINE_GUID(IID_IDCompositionDevice,  0xC37EA93A, 0xE7AA, 0x450D, 0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3);
@@ -783,40 +781,7 @@ void dx_draw_instanced(DxDevice* dev, uint32_t vertex_count, uint32_t instance_c
     ID3D11DeviceContext_DrawInstanced(dev->context, vertex_count, instance_count, start_vertex, start_instance);
 }
 
-// --- Shader compilation ---
-
-DxCompiledShader dx_compile_shader(const char* source, uint32_t source_len,
-                                    const char* entry_point, const char* target) {
-    DxCompiledShader result = {0};
-    ID3DBlob* blob = NULL;
-    ID3DBlob* errors = NULL;
-
-    HRESULT hr = D3DCompile(source, source_len, NULL, NULL, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-        entry_point, target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &errors);
-
-    if (FAILED(hr)) {
-        if (errors) {
-            OutputDebugStringA("HLSL compile error: ");
-            OutputDebugStringA((const char*)ID3D10Blob_GetBufferPointer(errors));
-            OutputDebugStringA("\n");
-            ID3D10Blob_Release(errors);
-        }
-        return result;
-    }
-    if (errors) ID3D10Blob_Release(errors);
-
-    result.size = (uint32_t)ID3D10Blob_GetBufferSize(blob);
-    result.bytecode = malloc(result.size);
-    if (result.bytecode) {
-        memcpy(result.bytecode, ID3D10Blob_GetBufferPointer(blob), result.size);
-    }
-    ID3D10Blob_Release(blob);
-    return result;
-}
-
-void dx_free_compiled_shader(DxCompiledShader shader) {
-    free(shader.bytecode);
-}
+// Shader compilation removed — using precompiled CSO blobs instead.
 
 // Create pipeline with BgImage vertex input layout
 DxPipeline* dx_create_bg_image_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,

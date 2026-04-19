@@ -128,40 +128,12 @@ pub fn getHandle(self: Self, device: ?*dx.DxDevice) ?*dx.DxPipeline {
         if (free_slot == null and slot.device == null) free_slot = idx;
     }
 
-    const src = &sources[self.id];
-    if (src.vs == null or src.ps == null) return null;
-
-    // Use cached compiled blobs if available, otherwise compile and cache.
+    // Use precompiled shader blobs (CSO). No runtime D3DCompile.
     const cache = &blob_cache[self.id];
-    var vs_bytecode = cache.vs_bytecode;
-    var vs_size = cache.vs_size;
-    var ps_bytecode = cache.ps_bytecode;
-    var ps_size = cache.ps_size;
-
-    var vs_compiled: dx.DxCompiledShader = .{ .bytecode = null, .size = 0 };
-    var ps_compiled: dx.DxCompiledShader = .{ .bytecode = null, .size = 0 };
-
-    if (vs_bytecode == null or ps_bytecode == null) {
-        vs_compiled = dx.dx_compile_shader(src.vs, src.vs_len, "vs_main", "vs_5_0");
-        ps_compiled = dx.dx_compile_shader(src.ps, src.ps_len, "ps_main", "ps_5_0");
-        if (vs_compiled.bytecode != null and ps_compiled.bytecode != null) {
-            // Cache the blobs (they persist for the process lifetime)
-            cache.vs_bytecode = @ptrCast(vs_compiled.bytecode);
-            cache.vs_size = vs_compiled.size;
-            cache.ps_bytecode = @ptrCast(ps_compiled.bytecode);
-            cache.ps_size = ps_compiled.size;
-            vs_bytecode = cache.vs_bytecode;
-            vs_size = cache.vs_size;
-            ps_bytecode = cache.ps_bytecode;
-            ps_size = cache.ps_size;
-        }
-    }
-
-    if (vs_bytecode == null or ps_bytecode == null) {
-        if (vs_compiled.bytecode != null) dx.dx_free_compiled_shader(vs_compiled);
-        if (ps_compiled.bytecode != null) dx.dx_free_compiled_shader(ps_compiled);
-        return null;
-    }
+    const vs_bytecode = cache.vs_bytecode orelse return null;
+    const vs_size = cache.vs_size;
+    const ps_bytecode = cache.ps_bytecode orelse return null;
+    const ps_size = cache.ps_size;
 
     const h = switch (self.layout_type) {
         .cell_text => dx.dx_create_cell_text_pipeline(device, @ptrCast(@constCast(vs_bytecode)), vs_size, @ptrCast(@constCast(ps_bytecode)), ps_size),

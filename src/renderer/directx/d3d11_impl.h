@@ -79,15 +79,6 @@ void dx_ensure_default_sampler(DxDevice* dev);
 // Query
 void dx_get_backbuffer_size(DxDevice* dev, uint32_t* width, uint32_t* height);
 
-// Shader compilation
-typedef struct DxCompiledShader {
-    void* bytecode;
-    uint32_t size;
-} DxCompiledShader;
-DxCompiledShader dx_compile_shader(const char* source, uint32_t source_len,
-                                    const char* entry_point, const char* target);
-void dx_free_compiled_shader(DxCompiledShader shader);
-
 // Specialized pipeline creation with input layouts
 DxPipeline* dx_create_bg_image_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,
                                          const void* ps_bytecode, uint32_t ps_size);
