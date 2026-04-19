@@ -1380,11 +1380,35 @@ pub const ReadThread = struct {
                         // Check for a quit signal
                         .OPERATION_ABORTED => break,
 
+                        // ConPTY signals child exit with BROKEN_PIPE
+                        .BROKEN_PIPE => {
+                            log.info("read thread: broken pipe, child process exited", .{});
+                            _ = io.surface_mailbox.push(.{
+                                .child_exited = .{
+                                    .exit_code = 0,
+                                    .runtime_ms = 0,
+                                },
+                            }, .{ .forever = {} });
+                            return;
+                        },
+
                         else => {
                             log.err("io reader error err={}", .{err});
                             unreachable;
                         },
                     }
+                }
+
+                // n=0 means the child process closed the PTY (exited)
+                if (n == 0) {
+                    log.warn("read thread: PTY EOF, child process exited", .{});
+                    _ = io.surface_mailbox.push(.{
+                        .child_exited = .{
+                            .exit_code = 0,
+                            .runtime_ms = 0,
+                        },
+                    }, .{ .forever = {} });
+                    return;
                 }
 
                 @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
