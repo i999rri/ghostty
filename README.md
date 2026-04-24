@@ -149,7 +149,7 @@ C-compatible library for embedding a fast, feature-rich terminal emulator
 in any 3rd party project. This library is called `libghostty`.
 
 Due to the scope of this project, we're breaking libghostty down into
-separate actually libraries, starting with `libghostty-vt`. The goal of
+separate libraries, starting with `libghostty-vt`. The goal of
 this project is to focus on parsing terminal sequences and maintaining
 terminal state. This is covered in more detail in this
 [blog post](https://mitchellh.com/writing/libghostty-is-coming).
