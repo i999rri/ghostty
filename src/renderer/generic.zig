@@ -1062,6 +1062,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     display_link.stop() catch {};
                 }
             }
+
+            // Forward to the graphics API if it has a setVisible hook.
+            // (Used by DirectX to toggle DirectComposition visual visibility.)
+            if (comptime @hasDecl(GraphicsAPI, "setVisible")) {
+                self.api.setVisible(visible);
+            }
         }
 
         /// Set the new font grid.
@@ -1826,7 +1832,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         fn uploadBackgroundImage(self: *Self) !void {
-            // Make sure our bg image is uploaded if it needs to be.
             if (self.bg_image) |*bg| {
                 if (bg.isUnloading()) {
                     bg.deinit(self.alloc);

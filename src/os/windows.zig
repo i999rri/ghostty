@@ -99,6 +99,26 @@ pub const exp = struct {
             lpStartupInfo: *windows.STARTUPINFOW,
             lpProcessInformation: *windows.PROCESS_INFORMATION,
         ) callconv(.winapi) windows.BOOL;
+        pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+        pub extern "kernel32" fn CreateWaitableTimerExW(
+            lpTimerAttributes: ?*windows.SECURITY_ATTRIBUTES,
+            lpTimerName: ?[*:0]const u16,
+            dwFlags: windows.DWORD,
+            dwDesiredAccess: windows.DWORD,
+        ) callconv(.winapi) ?windows.HANDLE;
+        pub extern "kernel32" fn SetWaitableTimerEx(
+            hTimer: windows.HANDLE,
+            lpDueTime: *const exp.LARGE_INTEGER,
+            lPeriod: i32,
+            pfnCompletionRoutine: ?*anyopaque,
+            lpArgToCompletionRoutine: ?*anyopaque,
+            WakeContext: ?*anyopaque,
+            TolerableDelay: u32,
+        ) callconv(.winapi) windows.BOOL;
+        pub extern "kernel32" fn WaitForSingleObject(
+            hHandle: windows.HANDLE,
+            dwMilliseconds: windows.DWORD,
+        ) callconv(.winapi) windows.DWORD;
         /// https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getcomputernamea
         pub extern "kernel32" fn GetComputerNameA(
             lpBuffer: windows.LPSTR,
@@ -130,4 +150,19 @@ pub const exp = struct {
     }
 
     pub const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = ProcThreadAttributeValue(.ProcThreadAttributePseudoConsole, false, true, false);
+
+    pub const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+    pub const LARGE_INTEGER = extern struct { quad_part: i64 };
+
+    /// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (Windows 10 1803+)
+    pub const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: windows.DWORD = 0x00000002;
+
+    pub const user32 = struct {
+        pub extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
+    };
+
+    pub const winmm = struct {
+        pub extern "winmm" fn timeBeginPeriod(u32) callconv(.winapi) u32;
+        pub extern "winmm" fn timeEndPeriod(u32) callconv(.winapi) u32;
+    };
 };

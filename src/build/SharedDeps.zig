@@ -422,6 +422,19 @@ pub fn add(
         else
             &.{},
     });
+    // DirectX 11 renderer C implementation
+    if (step.rootModuleTarget().os.tag == .windows) {
+        step.addCSourceFiles(.{ .files = &.{"src/renderer/directx/d3d11_impl.c"} });
+        step.addIncludePath(b.path("src/renderer/directx"));
+
+        // TranslateC for d3d11_impl.h — type-safe C imports (no @cImport)
+        const d3d11_c = b.addTranslateC(.{
+            .root_source_file = b.path("src/renderer/directx/d3d11_impl.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        step.root_module.addImport("d3d11-c", d3d11_c.createModule());
+    }
     if (step.rootModuleTarget().os.tag == .linux) {
         step.addIncludePath(b.path("src/apprt/gtk"));
     }
@@ -589,15 +602,15 @@ pub fn add(
         }
     }
 
+    // Statically compile glad (needed for both exe and lib/DLL builds)
+    step.addIncludePath(b.path("vendor/glad/include/"));
+    step.addCSourceFile(.{
+        .file = b.path("vendor/glad/src/gl.c"),
+        .flags = &.{},
+    });
+
     // If we're building an exe then we have additional dependencies.
     if (step.kind != .lib) {
-        // We always statically compile glad
-        step.addIncludePath(b.path("vendor/glad/include/"));
-        step.addCSourceFile(.{
-            .file = b.path("vendor/glad/src/gl.c"),
-            .flags = &.{},
-        });
-
         // When we're targeting flatpak we ALWAYS link GTK so we
         // get access to glib for dbus.
         if (self.config.flatpak) step.linkSystemLibrary2("gtk4", dynamic_link_opts);
