@@ -353,8 +353,29 @@ fn collection(
         }
     }
 
-    // Emoji fallback. We don't include this on Mac since Mac is expected
-    // to always have the Apple Emoji available on the system.
+    // On Windows, prefer the system Segoe UI Emoji font via font discovery
+    // (same pattern as macOS Apple Color Emoji above). This avoids eagerly
+    // loading the 10 MB embedded NotoColorEmoji on startup, saving ~100-200ms.
+    // Falls back to embedded Noto if Segoe UI Emoji is not found.
+    if (comptime builtin.os.tag == .windows and Discover != void) segoe_emoji: {
+        const disco = try self.discover() orelse break :segoe_emoji;
+        var disco_it = try disco.discover(self.alloc, .{
+            .family = "Segoe UI Emoji",
+        });
+        defer disco_it.deinit();
+        if (try disco_it.next()) |face| {
+            _ = try c.addDeferred(self.alloc, face, .{
+                .style = .regular,
+                .fallback = true,
+                .size_adjustment = .none,
+            });
+            return c;
+        }
+    }
+
+    // Emoji fallback using embedded Noto fonts. Skipped on macOS (Apple
+    // Color Emoji is always available) and on Windows when Segoe UI Emoji
+    // was found above.
     if (comptime !builtin.target.os.tag.isDarwin() or Discover == void) {
         _ = try c.add(
             self.alloc,
@@ -366,7 +387,6 @@ fn collection(
             .{
                 .style = .regular,
                 .fallback = true,
-                // No size adjustment for emojis.
                 .size_adjustment = .none,
             },
         );
@@ -380,7 +400,6 @@ fn collection(
             .{
                 .style = .regular,
                 .fallback = true,
-                // No size adjustment for emojis.
                 .size_adjustment = .none,
             },
         );
