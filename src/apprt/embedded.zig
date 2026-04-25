@@ -371,6 +371,11 @@ pub const Platform = union(PlatformTag) {
         /// External swap chain (IDXGISwapChain1*) for SwapChainPanel mode.
         /// When set, ghostty renders into this swap chain.
         swap_chain: ?*anyopaque = null,
+        /// DComposition surface handle for SwapChainPanel integration.
+        /// When set, ghostty creates its own device + swap chain on its
+        /// renderer thread, bound to this surface. The caller must already
+        /// have bound the handle to the panel via SetSwapChainHandle.
+        composition_surface_handle: ?*anyopaque = null,
     } else void;
 
     // The C ABI compatible version of this union. The tag is expected
@@ -390,6 +395,7 @@ pub const Platform = union(PlatformTag) {
             hglrc: ?*anyopaque,
             d3d_device: ?*anyopaque,
             swap_chain: ?*anyopaque,
+            composition_surface_handle: ?*anyopaque,
         },
     };
 
@@ -421,6 +427,7 @@ pub const Platform = union(PlatformTag) {
                     .hglrc = config.hglrc,
                     .d3d_device = config.d3d_device,
                     .swap_chain = config.swap_chain,
+                    .composition_surface_handle = config.composition_surface_handle,
                 } };
             } else error.UnsupportedPlatform,
         };

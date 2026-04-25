@@ -461,6 +461,11 @@ typedef struct {
   void* hglrc;
   void* d3d_device;
   void* swap_chain;
+  // DirectComposition surface handle (HANDLE) for SwapChainPanel integration.
+  // When set, ghostty creates its own device + swap chain on its renderer
+  // thread, bound to this surface. The caller must already have called
+  // ISwapChainPanelNative2::SetSwapChainHandle(handle) on the UI thread.
+  void* composition_surface_handle;
 } ghostty_platform_windows_s;
 
 typedef union {

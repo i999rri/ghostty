@@ -15,6 +15,14 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height);
 // Create device from externally-owned swap chain (for SwapChainPanel).
 // The device/swap_chain are borrowed — caller retains ownership.
 DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain, uint32_t width, uint32_t height);
+// Create device + swap chain bound to a DComposition surface handle
+// (Windows Terminal pattern). MUST be called from the thread that will own
+// the device (typically the renderer thread). Uses SINGLETHREADED so the
+// driver skips internal locking — matches WT's tested code path.
+// The caller must have already bound the handle to a SwapChainPanel via
+// ISwapChainPanelNative2::SetSwapChainHandle on the UI thread.
+// Surface handle ownership: the caller still owns it; we don't CloseHandle.
+DxDevice* dx_create_for_composition_surface(void* surface_handle, uint32_t width, uint32_t height);
 void dx_destroy(DxDevice* dev);
 
 // Swap chain

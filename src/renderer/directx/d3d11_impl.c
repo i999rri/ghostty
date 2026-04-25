@@ -16,6 +16,7 @@
 #pragma comment(lib, "dcomp.lib")
 
 DEFINE_GUID(IID_IDCompositionDevice,  0xC37EA93A, 0xE7AA, 0x450D, 0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3);
+DEFINE_GUID(IID_IDXGIFactoryMedia_local, 0x41e7d1f2, 0xa591, 0x4f7b, 0xa2, 0xe5, 0xfa, 0x9c, 0x84, 0x3e, 0x1c, 0x12);
 
 // Minimal IDCompositionVisual vtable (only SetContent + Release needed).
 // Each C++ overload occupies its own vtable slot.
@@ -284,9 +285,10 @@ DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint
     {
         IDXGISwapChain2* sc2 = NULL;
         if (SUCCEEDED(IDXGISwapChain1_QueryInterface(sc1, &IID_IDXGISwapChain2, (void**)&sc2))) {
-            IDXGISwapChain2_SetMaximumFrameLatency(sc2, 1);
+            // Don't call SetMaximumFrameLatency — default is 1 (minimum latency).
+            // MS sample explicitly comments out this call as redundant.
             dev->frame_latency_waitable = IDXGISwapChain2_GetFrameLatencyWaitableObject(sc2);
-            // Initial state is signaled — first wait will pass through immediately.
+            // Initial state is signaled — first wait passes through immediately.
             dev->wait_for_presentation = true;
             IDXGISwapChain2_Release(sc2);
 #ifndef NDEBUG
@@ -367,6 +369,162 @@ DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint
         }
     }
 
+    return dev;
+}
+
+// Create device + swap chain owned entirely by the calling thread.
+// This matches Windows Terminal AtlasEngine: SINGLETHREADED device created
+// inside the renderer thread, paired with a swap chain bound to a DComp
+// surface handle. The surface handle was created by the host C++ code and
+// already attached to the SwapChainPanel via SetSwapChainHandle.
+DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t width, uint32_t height) {
+    if (!surface_handle_ptr) return NULL;
+    HANDLE surface_handle = (HANDLE)surface_handle_ptr;
+
+    DxDevice* dev = (DxDevice*)calloc(1, sizeof(DxDevice));
+    if (!dev) return NULL;
+
+    // Pick the default adapter via DXGI factory.
+    IDXGIFactory2* factory = NULL;
+    HRESULT hr = CreateDXGIFactory2(0, &IID_IDXGIFactory2, (void**)&factory);
+    if (FAILED(hr) || !factory) {
+        OutputDebugStringA("D3D11: CreateDXGIFactory2 FAILED\n");
+        free(dev);
+        return NULL;
+    }
+    IDXGIAdapter* adapter = NULL;
+    IDXGIFactory2_EnumAdapters(factory, 0, &adapter);
+
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT
+               | D3D11_CREATE_DEVICE_SINGLETHREADED
+               | D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
+#ifndef NDEBUG
+    flags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+    D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
+    hr = D3D11CreateDevice(
+        adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+        NULL, flags, feature_levels, 1, D3D11_SDK_VERSION,
+        &dev->device, &dev->feature_level, &dev->context);
+    if (FAILED(hr) || !dev->device) {
+        OutputDebugStringA("D3D11: D3D11CreateDevice FAILED (composition surface)\n");
+        if (adapter) IDXGIAdapter_Release(adapter);
+        IDXGIFactory2_Release(factory);
+        free(dev);
+        return NULL;
+    }
+
+    // Build the swap chain matching WT AtlasEngine exactly.
+    DXGI_SWAP_CHAIN_DESC1 scd = {0};
+    scd.Width = width;
+    scd.Height = height;
+    scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    scd.SampleDesc.Count = 1;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.BufferCount = 3;
+    scd.Scaling = DXGI_SCALING_STRETCH;  // SwapChainPanel requires STRETCH
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    scd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+
+    // CreateSwapChainForCompositionSurfaceHandle lives on IDXGIFactoryMedia.
+    // We declare a minimal vtable in C; the IID is defined at file scope.
+    typedef struct IDXGIFactoryMedia IDXGIFactoryMedia;
+    typedef struct IDXGIFactoryMediaVtbl {
+        HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDXGIFactoryMedia*, REFIID, void**);
+        ULONG   (STDMETHODCALLTYPE *AddRef)(IDXGIFactoryMedia*);
+        ULONG   (STDMETHODCALLTYPE *Release)(IDXGIFactoryMedia*);
+        // SetPrivateData/GetPrivateData/SetPrivateDataInterface/GetParent — IDXGIObject
+        void* _SetPrivateData;
+        void* _SetPrivateDataInterface;
+        void* _GetPrivateData;
+        void* _GetParent;
+        // CreateSwapChainForCompositionSurfaceHandle (slot 8)
+        HRESULT (STDMETHODCALLTYPE *CreateSwapChainForCompositionSurfaceHandle)(
+            IDXGIFactoryMedia*, IUnknown*, HANDLE,
+            const DXGI_SWAP_CHAIN_DESC1*, void*, IDXGISwapChain1**);
+    } IDXGIFactoryMediaVtbl;
+    struct IDXGIFactoryMedia { IDXGIFactoryMediaVtbl* lpVtbl; };
+
+    IDXGIFactoryMedia* factory_media = NULL;
+    hr = IDXGIFactory2_QueryInterface(factory, &IID_IDXGIFactoryMedia_local, (void**)&factory_media);
+    IDXGIFactory2_Release(factory);
+    if (adapter) IDXGIAdapter_Release(adapter);
+    if (FAILED(hr) || !factory_media) {
+        OutputDebugStringA("D3D11: QueryInterface IDXGIFactoryMedia FAILED\n");
+        ID3D11DeviceContext_Release(dev->context);
+        ID3D11Device_Release(dev->device);
+        free(dev);
+        return NULL;
+    }
+
+    IDXGISwapChain1* swap_chain1 = NULL;
+    hr = factory_media->lpVtbl->CreateSwapChainForCompositionSurfaceHandle(
+        factory_media, (IUnknown*)dev->device, surface_handle, &scd, NULL, &swap_chain1);
+    factory_media->lpVtbl->Release(factory_media);
+    if (FAILED(hr) || !swap_chain1) {
+        char buf[128];
+        sprintf(buf, "D3D11: CreateSwapChainForCompositionSurfaceHandle FAILED hr=0x%08X\n", (unsigned)hr);
+        OutputDebugStringA(buf);
+        ID3D11DeviceContext_Release(dev->context);
+        ID3D11Device_Release(dev->device);
+        free(dev);
+        return NULL;
+    }
+
+    // Get the waitable handle (matches WT) and explicitly set max latency to 1.
+    {
+        IDXGISwapChain2* sc2 = NULL;
+        if (SUCCEEDED(IDXGISwapChain1_QueryInterface(swap_chain1, &IID_IDXGISwapChain2, (void**)&sc2))) {
+            IDXGISwapChain2_SetMaximumFrameLatency(sc2, 1);
+            dev->frame_latency_waitable = IDXGISwapChain2_GetFrameLatencyWaitableObject(sc2);
+            dev->wait_for_presentation = true;
+            IDXGISwapChain2_Release(sc2);
+        }
+    }
+
+    IDXGISwapChain1_QueryInterface(swap_chain1, &IID_IDXGISwapChain, (void**)&dev->swap_chain);
+    IDXGISwapChain1_Release(swap_chain1);
+
+    dx_create_backbuffer_rtv(dev);
+    dev->bb_width = width;
+    dev->bb_height = height;
+
+    // Standard state objects (same as other paths).
+    D3D11_BLEND_DESC bd = {0};
+    bd.RenderTarget[0].BlendEnable = TRUE;
+    bd.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    ID3D11Device_CreateBlendState(dev->device, &bd, &dev->blend_on);
+    bd.RenderTarget[0].BlendEnable = FALSE;
+    ID3D11Device_CreateBlendState(dev->device, &bd, &dev->blend_off);
+
+    D3D11_RASTERIZER_DESC rd = {0};
+    rd.FillMode = D3D11_FILL_SOLID;
+    rd.CullMode = D3D11_CULL_NONE;
+    rd.DepthClipEnable = TRUE;
+    ID3D11Device_CreateRasterizerState(dev->device, &rd, &dev->rasterizer_state);
+    if (dev->rasterizer_state) {
+        ID3D11DeviceContext_RSSetState(dev->context, dev->rasterizer_state);
+    }
+
+    D3D11_SAMPLER_DESC sd = {0};
+    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.MaxLOD = D3D11_FLOAT32_MAX;
+    ID3D11Device_CreateSamplerState(dev->device, &sd, &dev->default_sampler);
+    if (dev->default_sampler) {
+        ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &dev->default_sampler);
+    }
+
+    OutputDebugStringA("D3D11: Device + swap chain created for composition surface\n");
     return dev;
 }
 

@@ -119,10 +119,16 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     const w: u32 = @intCast(@max(rect.right - rect.left, 1));
     const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 
-    // Use external device + swap chain if provided (SwapChainPanel mode),
-    // otherwise create our own (DirectComposition / legacy HWND mode).
+    // Three creation paths, in priority order:
+    //  1. composition_surface_handle: ghostty owns device+swap chain on this
+    //     thread (SINGLETHREADED, matches Windows Terminal AtlasEngine).
+    //     Required for stable rendering on NVIDIA with SwapChainPanel.
+    //  2. d3d_device + swap_chain: caller-provided externals (legacy path).
+    //  3. hwnd only: ghostty creates its own DComp visual (standalone mode).
     const platform = surface.platform.windows;
-    const dev = if (platform.d3d_device != null and platform.swap_chain != null)
+    const dev = if (platform.composition_surface_handle != null)
+        dx.dx_create_for_composition_surface(platform.composition_surface_handle, w, h)
+    else if (platform.d3d_device != null and platform.swap_chain != null)
         dx.dx_create_from_swap_chain(platform.d3d_device, platform.swap_chain, w, h)
     else
         dx.dx_create(hwnd, w, h);
@@ -158,7 +164,9 @@ pub fn drawFrameStart(self: *DirectX) void {
 
 pub fn drawFrameEnd(self: *DirectX) void {
     const dev = self.device orelse return;
-    dx.dx_present(dev, false);
+    // VSync to match SwapChainPanel/DComp composition cadence.
+    // With FRAME_LATENCY_WAITABLE_OBJECT, vsync prevents tearing/flicker.
+    dx.dx_present(dev, true);
 }
 
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
