@@ -94,6 +94,11 @@ void dx_get_window_size(DxDevice* dev, uint32_t* width, uint32_t* height);
 // DirectComposition visibility control (safe to call while renderer is active)
 void dx_set_visible(DxDevice* dev, bool visible);
 
+// Block until DXGI is ready for the next frame. Called at frame start to
+// throttle CPU based on GPU/composition pace. No-op if the swap chain was
+// not created with DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.
+void dx_wait_frame_latency(DxDevice* dev);
+
 #ifdef __cplusplus
 }
 #endif

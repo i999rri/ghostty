@@ -9,6 +9,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
+#include <dxgi1_3.h>
 // dcomp.h is C++-only; declare the minimal DirectComposition interfaces in C.
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -109,6 +110,12 @@ struct DxDevice {
     // read by renderer thread). Volatile for cross-thread visibility.
     volatile uint32_t window_width;
     volatile uint32_t window_height;
+    // Frame latency waitable object handle (NULL if not used).
+    // Owned by the swap chain — do NOT CloseHandle on this.
+    HANDLE frame_latency_waitable;
+    // Guard against double-waiting on the auto-reset event.
+    // Set true after Present, cleared after wait.
+    volatile bool wait_for_presentation;
 };
 
 static void dx_create_backbuffer_rtv(DxDevice* dev) {
@@ -271,6 +278,25 @@ DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint
     IDXGISwapChain1* sc1 = (IDXGISwapChain1*)swap_chain_ptr;
     IDXGISwapChain1_QueryInterface(sc1, &IID_IDXGISwapChain, (void**)&dev->swap_chain);
 
+    // Try to get IDXGISwapChain2 for frame latency waitable.
+    // Only works if the swap chain was created with
+    // DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.
+    {
+        IDXGISwapChain2* sc2 = NULL;
+        if (SUCCEEDED(IDXGISwapChain1_QueryInterface(sc1, &IID_IDXGISwapChain2, (void**)&sc2))) {
+            IDXGISwapChain2_SetMaximumFrameLatency(sc2, 1);
+            dev->frame_latency_waitable = IDXGISwapChain2_GetFrameLatencyWaitableObject(sc2);
+            // Initial state is signaled — first wait will pass through immediately.
+            dev->wait_for_presentation = true;
+            IDXGISwapChain2_Release(sc2);
+#ifndef NDEBUG
+            if (dev->frame_latency_waitable) {
+                OutputDebugStringA("D3D11: Frame latency waitable enabled\n");
+            }
+#endif
+        }
+    }
+
     dev->feature_level = ID3D11Device_GetFeatureLevel(dev->device);
     // No DirectComposition — SwapChainPanel manages composition
 
@@ -371,24 +397,31 @@ void dx_resize(DxDevice* dev, uint32_t width, uint32_t height) {
     if (!dev || width == 0 || height == 0) return;
     if (dev->bb_width == width && dev->bb_height == height) return;
 
-    // Clear all state that references the backbuffer
-    ID3D11ShaderResourceView* nullSRVs[8] = {0};
-    ID3D11DeviceContext_PSSetShaderResources(dev->context, 0, 8, nullSRVs);
-    ID3D11DeviceContext_VSSetShaderResources(dev->context, 0, 8, nullSRVs);
-    ID3D11DeviceContext_OMSetRenderTargets(dev->context, 0, NULL, NULL);
+    __try {
+        // Clear all state that references the backbuffer
+        ID3D11ShaderResourceView* nullSRVs[8] = {0};
+        ID3D11DeviceContext_PSSetShaderResources(dev->context, 0, 8, nullSRVs);
+        ID3D11DeviceContext_VSSetShaderResources(dev->context, 0, 8, nullSRVs);
+        ID3D11DeviceContext_OMSetRenderTargets(dev->context, 0, NULL, NULL);
 
-    if (dev->backbuffer_rtv) {
-        ID3D11RenderTargetView_Release(dev->backbuffer_rtv);
-        dev->backbuffer_rtv = NULL;
-    }
+        if (dev->backbuffer_rtv) {
+            ID3D11RenderTargetView_Release(dev->backbuffer_rtv);
+            dev->backbuffer_rtv = NULL;
+        }
 
-    ID3D11DeviceContext_Flush(dev->context);
+        ID3D11DeviceContext_Flush(dev->context);
 
-    HRESULT hr = IDXGISwapChain_ResizeBuffers(dev->swap_chain, 0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-    if (SUCCEEDED(hr)) {
-        dx_create_backbuffer_rtv(dev);
-        dev->bb_width = width;
-        dev->bb_height = height;
+        // Preserve FRAME_LATENCY_WAITABLE_OBJECT flag if it was set —
+        // ResizeBuffers strips flags unless we pass them explicitly.
+        UINT flags = dev->frame_latency_waitable ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0;
+        HRESULT hr = IDXGISwapChain_ResizeBuffers(dev->swap_chain, 0, width, height, DXGI_FORMAT_UNKNOWN, flags);
+        if (SUCCEEDED(hr)) {
+            dx_create_backbuffer_rtv(dev);
+            dev->bb_width = width;
+            dev->bb_height = height;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("D3D11: CRASH in Resize!\n");
     }
 }
 
@@ -412,6 +445,10 @@ void dx_present(DxDevice* dev, bool vsync) {
 
     __try {
         HRESULT hr = IDXGISwapChain_Present(dev->swap_chain, vsync ? 1 : 0, 0);
+        if (SUCCEEDED(hr)) {
+            // Mark that the waitable will be signaled by this Present.
+            dev->wait_for_presentation = true;
+        }
         if (FAILED(hr)) {
 #ifndef NDEBUG
             char buf[128];
@@ -447,31 +484,51 @@ void* dx_get_swap_chain(DxDevice* dev) {
 void dx_clear(DxDevice* dev, float r, float g, float b, float a) {
     if (!dev || !dev->backbuffer_rtv) return;
     float color[4] = { r, g, b, a };
-    ID3D11DeviceContext_ClearRenderTargetView(dev->context, dev->backbuffer_rtv, color);
+    __try {
+        ID3D11DeviceContext_ClearRenderTargetView(dev->context, dev->backbuffer_rtv, color);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("D3D11: CRASH in Clear!\n");
+    }
 }
 
 void dx_set_viewport(DxDevice* dev, uint32_t width, uint32_t height) {
     if (!dev) return;
     D3D11_VIEWPORT vp = { 0, 0, (float)width, (float)height, 0.0f, 1.0f };
-    ID3D11DeviceContext_RSSetViewports(dev->context, 1, &vp);
+    __try {
+        ID3D11DeviceContext_RSSetViewports(dev->context, 1, &vp);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("D3D11: CRASH in SetViewport!\n");
+    }
 }
 
 void dx_bind_backbuffer(DxDevice* dev) {
     if (!dev) return;
-    ID3D11DeviceContext_OMSetRenderTargets(dev->context, 1, &dev->backbuffer_rtv, NULL);
+    __try {
+        ID3D11DeviceContext_OMSetRenderTargets(dev->context, 1, &dev->backbuffer_rtv, NULL);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("D3D11: CRASH in BindBackbuffer!\n");
+    }
 }
 
 void dx_set_blend_enabled(DxDevice* dev, bool enabled) {
     if (!dev) return;
     float blend_factor[4] = { 0, 0, 0, 0 };
-    ID3D11DeviceContext_OMSetBlendState(dev->context, enabled ? dev->blend_on : dev->blend_off, blend_factor, 0xFFFFFFFF);
+    __try {
+        ID3D11DeviceContext_OMSetBlendState(dev->context, enabled ? dev->blend_on : dev->blend_off, blend_factor, 0xFFFFFFFF);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("D3D11: CRASH in SetBlend!\n");
+    }
 }
 
 void dx_clear_shader_resources(DxDevice* dev) {
     if (!dev) return;
-    ID3D11ShaderResourceView* nullSRVs[8] = {0};
-    ID3D11DeviceContext_VSSetShaderResources(dev->context, 0, 8, nullSRVs);
-    ID3D11DeviceContext_PSSetShaderResources(dev->context, 0, 8, nullSRVs);
+    __try {
+        ID3D11ShaderResourceView* nullSRVs[8] = {0};
+        ID3D11DeviceContext_VSSetShaderResources(dev->context, 0, 8, nullSRVs);
+        ID3D11DeviceContext_PSSetShaderResources(dev->context, 0, 8, nullSRVs);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("D3D11: CRASH in ClearShaderResources!\n");
+    }
 }
 
 void dx_ensure_default_sampler(DxDevice* dev) {
@@ -536,11 +593,15 @@ void dx_destroy_buffer(DxBuffer* buf) {
 
 void dx_update_buffer(DxDevice* dev, DxBuffer* buf, const void* data, uint32_t byte_size) {
     if (!dev || !buf || !data) return;
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    HRESULT hr = ID3D11DeviceContext_Map(dev->context, (ID3D11Resource*)buf->buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (SUCCEEDED(hr)) {
-        memcpy(mapped.pData, data, byte_size < buf->byte_size ? byte_size : buf->byte_size);
-        ID3D11DeviceContext_Unmap(dev->context, (ID3D11Resource*)buf->buffer, 0);
+    __try {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        HRESULT hr = ID3D11DeviceContext_Map(dev->context, (ID3D11Resource*)buf->buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (SUCCEEDED(hr)) {
+            memcpy(mapped.pData, data, byte_size < buf->byte_size ? byte_size : buf->byte_size);
+            ID3D11DeviceContext_Unmap(dev->context, (ID3D11Resource*)buf->buffer, 0);
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("D3D11: CRASH in UpdateBuffer! Caught by SEH.\n");
     }
 }
 
@@ -626,7 +687,14 @@ void dx_update_texture_region(DxDevice* dev, DxTexture* tex, uint32_t x, uint32_
     if (!dev || !tex || !data) return;
     uint32_t bpp = (tex->format == DXGI_FORMAT_R8_UNORM) ? 1 : 4;
     D3D11_BOX box = { x, y, 0, x + w, y + h, 1 };
-    ID3D11DeviceContext_UpdateSubresource(dev->context, (ID3D11Resource*)tex->texture, 0, &box, data, w * bpp, 0);
+    __try {
+        ID3D11DeviceContext_UpdateSubresource(dev->context, (ID3D11Resource*)tex->texture, 0, &box, data, w * bpp, 0);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        char buf[256];
+        sprintf(buf, "D3D11: CRASH in UpdateSubresource! tex=%p region=(%u,%u,%u,%u) bpp=%u data=%p\n",
+            (void*)tex->texture, x, y, w, h, bpp, data);
+        OutputDebugStringA(buf);
+    }
 }
 
 void dx_bind_texture(DxDevice* dev, DxTexture* tex, uint32_t slot) {
@@ -770,15 +838,23 @@ void dx_bind_render_target(DxDevice* dev, DxRenderTarget* rt) {
 
 void dx_draw(DxDevice* dev, uint32_t vertex_count, uint32_t start, uint32_t topology) {
     if (!dev) return;
-    ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, (D3D11_PRIMITIVE_TOPOLOGY)topology);
-    ID3D11DeviceContext_Draw(dev->context, vertex_count, start);
+    __try {
+        ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, (D3D11_PRIMITIVE_TOPOLOGY)topology);
+        ID3D11DeviceContext_Draw(dev->context, vertex_count, start);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("D3D11: CRASH in Draw! Caught by SEH.\n");
+    }
 }
 
 void dx_draw_instanced(DxDevice* dev, uint32_t vertex_count, uint32_t instance_count,
                         uint32_t start_vertex, uint32_t start_instance, uint32_t topology) {
     if (!dev) return;
-    ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, (D3D11_PRIMITIVE_TOPOLOGY)topology);
-    ID3D11DeviceContext_DrawInstanced(dev->context, vertex_count, instance_count, start_vertex, start_instance);
+    __try {
+        ID3D11DeviceContext_IASetPrimitiveTopology(dev->context, (D3D11_PRIMITIVE_TOPOLOGY)topology);
+        ID3D11DeviceContext_DrawInstanced(dev->context, vertex_count, instance_count, start_vertex, start_instance);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        OutputDebugStringA("D3D11: CRASH in DrawInstanced! Caught by SEH.\n");
+    }
 }
 
 // Shader compilation removed — using precompiled CSO blobs instead.
@@ -861,5 +937,14 @@ void dx_set_visible(DxDevice* dev, bool visible) {
     if (!dev || !dev->dcomp_target) return;
     IDCompositionTarget_SetRoot(dev->dcomp_target, visible ? dev->dcomp_visual : NULL);
     IDCompositionDevice_Commit(dev->dcomp_device);
+}
+
+void dx_wait_frame_latency(DxDevice* dev) {
+    if (!dev || !dev->frame_latency_waitable) return;
+    // Auto-reset event: only wait if a Present has signaled it.
+    // Otherwise we'd block until timeout, causing visible stalls.
+    if (!dev->wait_for_presentation) return;
+    WaitForSingleObjectEx(dev->frame_latency_waitable, 100, TRUE);
+    dev->wait_for_presentation = false;
 }
 

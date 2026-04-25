@@ -142,6 +142,9 @@ pub fn displayRealized(self: *const DirectX) void {
 
 pub fn drawFrameStart(self: *DirectX) void {
     const dev = self.device orelse return;
+    // Wait for DXGI to be ready for the next frame. Throttles CPU based
+    // on GPU/composition pace. No-op for swap chains without waitable.
+    dx.dx_wait_frame_latency(dev);
     current_device = dev; // sync for Buffer/Texture/Sampler
     var w: u32 = 0;
     var h: u32 = 0;
