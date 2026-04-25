@@ -531,11 +531,28 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
 void dx_destroy(DxDevice* dev) {
     if (!dev) return;
     // ClearState + Flush trigger deferred destruction of DXGI flip-model
-    // swap chains. Without this, creating a new swap chain on the same HWND
-    // will fail with DXGI ERROR #297.
-    if (dev->context) {
+    // swap chains. Without this, creating a new swap chain on the same
+    // HWND/IWindow/composition surface fails with DXGI ERROR #297.
+    // We then block on a query event so the GPU actually finishes pending
+    // work before we Release the swap chain — Flush only schedules.
+    if (dev->context && dev->device) {
         ID3D11DeviceContext_ClearState(dev->context);
         ID3D11DeviceContext_Flush(dev->context);
+
+        ID3D11Query* query = NULL;
+        D3D11_QUERY_DESC qd = { D3D11_QUERY_EVENT, 0 };
+        if (SUCCEEDED(ID3D11Device_CreateQuery(dev->device, &qd, &query)) && query) {
+            ID3D11DeviceContext_End(dev->context, (ID3D11Asynchronous*)query);
+            BOOL done = FALSE;
+            for (int i = 0; i < 1000 && !done; i++) {
+                if (ID3D11DeviceContext_GetData(dev->context, (ID3D11Asynchronous*)query,
+                                                 &done, sizeof(done), 0) == S_OK && done) {
+                    break;
+                }
+                Sleep(1);
+            }
+            ID3D11Query_Release(query);
+        }
     }
     if (dev->dcomp_visual) IDCompositionVisual_Release(dev->dcomp_visual);
     if (dev->dcomp_target) IDCompositionTarget_Release(dev->dcomp_target);
