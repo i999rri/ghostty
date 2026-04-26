@@ -395,9 +395,9 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
     IDXGIAdapter* adapter = NULL;
     IDXGIFactory2_EnumAdapters(factory, 0, &adapter);
 
+    // Match the standalone dx_create() path's flags: BGRA + SINGLETHREADED.
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT
-               | D3D11_CREATE_DEVICE_SINGLETHREADED
-               | D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
+               | D3D11_CREATE_DEVICE_SINGLETHREADED;
 #ifndef NDEBUG
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
