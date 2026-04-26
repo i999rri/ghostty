@@ -38,7 +38,14 @@ void dx_set_viewport(DxDevice* dev, uint32_t width, uint32_t height);
 
 // Buffer operations
 typedef struct DxBuffer DxBuffer;
-DxBuffer* dx_create_buffer(DxDevice* dev, uint32_t bind_flags, uint32_t byte_size, const void* initial_data);
+// Create a GPU buffer of `byte_size` bytes with no initial data. Callers
+// fill the buffer separately via `dx_update_buffer`. The previous variant
+// of this function accepted an `initial_data` pointer that the driver
+// memcpy'd `byte_size` bytes from — trivial to misuse when the caller's
+// data was shorter than the requested buffer (the driver then OOB-read
+// into an unmapped page, AVing inside nvwgf2umx.dll). Removing the
+// parameter makes that bug class impossible to express.
+DxBuffer* dx_create_buffer(DxDevice* dev, uint32_t bind_flags, uint32_t byte_size);
 void dx_destroy_buffer(DxBuffer* buf);
 void dx_update_buffer(DxDevice* dev, DxBuffer* buf, const void* data, uint32_t byte_size);
 void dx_bind_vertex_buffer(DxDevice* dev, DxBuffer* buf, uint32_t stride, uint32_t slot);

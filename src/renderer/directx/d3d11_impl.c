@@ -128,6 +128,12 @@ static void dx_create_backbuffer_rtv(DxDevice* dev) {
     }
 }
 
+// Live device counter — incremented at the end of every successful dx_create_*,
+// decremented at the start of dx_destroy. Tracks NVIDIA driver pressure across
+// tab create/destroy cycles. Cross-thread (creators run on UI thread, destroyer
+// on renderer thread), so use Interlocked*.
+static volatile LONG g_device_count = 0;
+
 DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     DxDevice* dev = (DxDevice*)calloc(1, sizeof(DxDevice));
     if (!dev) return NULL;
@@ -260,6 +266,12 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
         }
     }
 
+    {
+        LONG live = InterlockedIncrement(&g_device_count);
+        char b[160];
+        sprintf(b, "D3D11: device created (hwnd) live=%ld this=%p\n", live, (void*)dev);
+        OutputDebugStringA(b);
+    }
     return dev;
 }
 
@@ -369,6 +381,12 @@ DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint
         }
     }
 
+    {
+        LONG live = InterlockedIncrement(&g_device_count);
+        char b[160];
+        sprintf(b, "D3D11: device created (external swap chain) live=%ld this=%p\n", live, (void*)dev);
+        OutputDebugStringA(b);
+    }
     return dev;
 }
 
@@ -395,7 +413,10 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
     IDXGIAdapter* adapter = NULL;
     IDXGIFactory2_EnumAdapters(factory, 0, &adapter);
 
-    // Match the standalone dx_create() path's flags: BGRA + SINGLETHREADED.
+    // BGRA_SUPPORT is required so the swap chain can present BGRA8 to the
+    // composition surface. SINGLETHREADED matches Windows Terminal AtlasEngine.
+    // Tested removing it — did not fix (nor make worse) the NVIDIA `rep movsb`
+    // AV in nvwgf2umx.dll, so the cross-thread teardown hypothesis was wrong.
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT
                | D3D11_CREATE_DEVICE_SINGLETHREADED;
 #ifndef NDEBUG
@@ -524,12 +545,24 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
         ID3D11DeviceContext_PSSetSamplers(dev->context, 0, 1, &dev->default_sampler);
     }
 
-    OutputDebugStringA("D3D11: Device + swap chain created for composition surface\n");
+    {
+        LONG live = InterlockedIncrement(&g_device_count);
+        char b[160];
+        sprintf(b, "D3D11: device created (composition surface) live=%ld this=%p\n", live, (void*)dev);
+        OutputDebugStringA(b);
+    }
     return dev;
 }
 
 void dx_destroy(DxDevice* dev) {
     if (!dev) return;
+
+    {
+        LONG live = InterlockedDecrement(&g_device_count);
+        char b[160];
+        sprintf(b, "D3D11: device destroying live=%ld this=%p\n", live, (void*)dev);
+        OutputDebugStringA(b);
+    }
 
     // Step 1: unbind the backbuffer's RTV from the context. Without this,
     // the context retains a reference to the backbuffer and Release on the
@@ -756,7 +789,7 @@ struct DxBuffer {
     uint32_t byte_size;
 };
 
-DxBuffer* dx_create_buffer(DxDevice* dev, uint32_t bind_flags, uint32_t byte_size, const void* initial_data) {
+DxBuffer* dx_create_buffer(DxDevice* dev, uint32_t bind_flags, uint32_t byte_size) {
     if (!dev) return NULL;
     DxBuffer* buf = (DxBuffer*)calloc(1, sizeof(DxBuffer));
     if (!buf) return NULL;
@@ -768,11 +801,9 @@ DxBuffer* dx_create_buffer(DxDevice* dev, uint32_t bind_flags, uint32_t byte_siz
     bd.Usage = D3D11_USAGE_DYNAMIC;
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-    // Shader resource buffers: use typed buffer (not structured)
-    // to avoid BUFFER_STRUCTURED compatibility issues
-
-    D3D11_SUBRESOURCE_DATA sd = { .pSysMem = initial_data };
-    HRESULT hr = ID3D11Device_CreateBuffer(dev->device, &bd, initial_data ? &sd : NULL, &buf->buffer);
+    // No initial data — caller fills via dx_update_buffer (Map/Unmap).
+    // See the header for why we removed the initial_data parameter.
+    HRESULT hr = ID3D11Device_CreateBuffer(dev->device, &bd, NULL, &buf->buffer);
     if (FAILED(hr)) { free(buf); return NULL; }
 
     return buf;
