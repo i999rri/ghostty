@@ -376,6 +376,11 @@ pub const Platform = union(PlatformTag) {
         /// renderer thread, bound to this surface. The caller must already
         /// have bound the handle to the panel via SetSwapChainHandle.
         composition_surface_handle: ?*anyopaque = null,
+        /// Initial swap chain dimensions. When non-zero, used instead of
+        /// querying the HWND's client rect — saves an immediate ResizeBuffers
+        /// on the first frame when the host knows the actual panel size.
+        initial_width: u32 = 0,
+        initial_height: u32 = 0,
     } else void;
 
     // The C ABI compatible version of this union. The tag is expected
@@ -396,6 +401,8 @@ pub const Platform = union(PlatformTag) {
             d3d_device: ?*anyopaque,
             swap_chain: ?*anyopaque,
             composition_surface_handle: ?*anyopaque,
+            initial_width: u32,
+            initial_height: u32,
         },
     };
 
@@ -428,6 +435,8 @@ pub const Platform = union(PlatformTag) {
                     .d3d_device = config.d3d_device,
                     .swap_chain = config.swap_chain,
                     .composition_surface_handle = config.composition_surface_handle,
+                    .initial_width = config.initial_width,
+                    .initial_height = config.initial_height,
                 } };
             } else error.UnsupportedPlatform,
         };

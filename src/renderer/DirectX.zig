@@ -120,10 +120,23 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
         current_device = null;
     }
 
-    var rect: windows.exp.RECT = undefined;
-    _ = windows.exp.user32.GetClientRect(hwnd, &rect);
-    const w: u32 = @intCast(@max(rect.right - rect.left, 1));
-    const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
+    const platform = surface.platform.windows;
+
+    // Prefer caller-provided size (e.g. SwapChainPanel ActualWidth/Height) so
+    // the swap chain is created at its final size from the start. Falls back
+    // to the parent HWND's client rect when not supplied. Avoids an
+    // immediate ResizeBuffers on the first frame.
+    const w: u32, const h: u32 = blk: {
+        if (platform.initial_width > 0 and platform.initial_height > 0) {
+            break :blk .{ platform.initial_width, platform.initial_height };
+        }
+        var rect: windows.exp.RECT = undefined;
+        _ = windows.exp.user32.GetClientRect(hwnd, &rect);
+        break :blk .{
+            @as(u32, @intCast(@max(rect.right - rect.left, 1))),
+            @as(u32, @intCast(@max(rect.bottom - rect.top, 1))),
+        };
+    };
 
     // Three creation paths, in priority order:
     //  1. composition_surface_handle: ghostty owns device+swap chain on this
@@ -131,7 +144,6 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     //     Required for stable rendering on NVIDIA with SwapChainPanel.
     //  2. d3d_device + swap_chain: caller-provided externals (legacy path).
     //  3. hwnd only: ghostty creates its own DComp visual (standalone mode).
-    const platform = surface.platform.windows;
     const dev = if (platform.composition_surface_handle != null)
         dx.dx_create_for_composition_surface(platform.composition_surface_handle, w, h)
     else if (platform.d3d_device != null and platform.swap_chain != null)
