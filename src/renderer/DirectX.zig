@@ -82,12 +82,12 @@ pub fn deinit(self: *DirectX) void {
     if (self.device) |dev| dx.dx_destroy(dev);
     self.device = null;
     // Clear the calling thread's threadlocal device pointer. Surface.deinit
-    // calls renderer.threadEnter(rt_surface) on its own (non-renderer) thread
-    // before invoking renderer.deinit, which sets current_device for that
-    // thread to a fresh device. Without clearing here, that thread keeps a
-    // dangling pointer to a freed device — the next surface's Renderer.init
-    // running on the same thread reads it via Texture.init/Buffer.init and
-    // crashes inside dx_create_texture / dx_create_buffer.
+    // calls renderer.threadEnter on its own (non-renderer) thread before
+    // invoking renderer.deinit; that threadEnter points current_device at
+    // our existing device. Without clearing here, after we dx_destroy that
+    // thread keeps a dangling pointer to a freed device — the next surface's
+    // Renderer.init running on the same thread reads it via Texture.init /
+    // Buffer.init and crashes inside dx_create_texture / dx_create_buffer.
     current_device = null;
     self.* = undefined;
 }
@@ -104,20 +104,26 @@ pub fn finalizeSurfaceInit(self: *const DirectX, surface: *apprt.Surface) !void 
 
 pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     if (comptime builtin.os.tag != .windows) return;
+
+    const self_mut: *DirectX = @constCast(self);
+
+    // If a device already exists, this call is from Surface.deinit on the
+    // UI thread ("become the active rendering thread again") purely to set
+    // up this thread's threadlocal current_device so the subsequent
+    // renderer.deinit can clean up. Mirror OpenGL.zig's wglMakeCurrent
+    // semantics — attach to the existing device, no D3D churn. Without
+    // this, every tab close wastes one D3D11CreateDevice + dx_destroy pair
+    // (driver alloc/free at 2x the rate it would otherwise be), which
+    // crashes NVIDIA's user-mode driver under stress.
+    if (self_mut.device) |existing| {
+        current_device = existing;
+        return;
+    }
+
     const hwnd: ?*anyopaque = @ptrCast(surface.platform.windows.hwnd);
     if (hwnd == null) {
         log.err("HWND not set on surface — surfaceInit was not called", .{});
         return error.HWNDNotSet;
-    }
-
-    // Destroy any existing device first — DXGI flip-model only allows one
-    // swap chain per HWND, so we must tear down the old one before creating
-    // a new one (e.g. if threadEnter is called again after threadExit).
-    const self_mut: *DirectX = @constCast(self);
-    if (self_mut.device) |old| {
-        dx.dx_destroy(old);
-        self_mut.device = null;
-        current_device = null;
     }
 
     const platform = surface.platform.windows;
