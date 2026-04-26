@@ -12,11 +12,25 @@ typedef struct DxDevice DxDevice;
 
 // Device creation
 DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height);
+// Create device from externally-owned swap chain (for SwapChainPanel).
+// The device/swap_chain are borrowed — caller retains ownership.
+DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain, uint32_t width, uint32_t height);
+// Create device + swap chain bound to a DComposition surface handle
+// (Windows Terminal pattern). MUST be called from the thread that will own
+// the device (typically the renderer thread). Uses SINGLETHREADED so the
+// driver skips internal locking — matches WT's tested code path.
+// The caller must have already bound the handle to a SwapChainPanel via
+// ISwapChainPanelNative2::SetSwapChainHandle on the UI thread.
+// Surface handle ownership: the caller still owns it; we don't CloseHandle.
+DxDevice* dx_create_for_composition_surface(void* surface_handle, uint32_t width, uint32_t height);
 void dx_destroy(DxDevice* dev);
 
 // Swap chain
 void dx_resize(DxDevice* dev, uint32_t width, uint32_t height);
 void dx_present(DxDevice* dev, bool vsync);
+// Returns the IDXGISwapChain1* for SwapChainPanel integration.
+// Caller must NOT release — ownership stays with DxDevice.
+void* dx_get_swap_chain(DxDevice* dev);
 
 // Frame operations
 void dx_clear(DxDevice* dev, float r, float g, float b, float a);
@@ -73,15 +87,6 @@ void dx_ensure_default_sampler(DxDevice* dev);
 // Query
 void dx_get_backbuffer_size(DxDevice* dev, uint32_t* width, uint32_t* height);
 
-// Shader compilation
-typedef struct DxCompiledShader {
-    void* bytecode;
-    uint32_t size;
-} DxCompiledShader;
-DxCompiledShader dx_compile_shader(const char* source, uint32_t source_len,
-                                    const char* entry_point, const char* target);
-void dx_free_compiled_shader(DxCompiledShader shader);
-
 // Specialized pipeline creation with input layouts
 DxPipeline* dx_create_bg_image_pipeline(DxDevice* dev, const void* vs_bytecode, uint32_t vs_size,
                                          const void* ps_bytecode, uint32_t ps_size);
@@ -96,6 +101,11 @@ void dx_get_window_size(DxDevice* dev, uint32_t* width, uint32_t* height);
 
 // DirectComposition visibility control (safe to call while renderer is active)
 void dx_set_visible(DxDevice* dev, bool visible);
+
+// Block until DXGI is ready for the next frame. Called at frame start to
+// throttle CPU based on GPU/composition pace. No-op if the swap chain was
+// not created with DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.
+void dx_wait_frame_latency(DxDevice* dev);
 
 #ifdef __cplusplus
 }

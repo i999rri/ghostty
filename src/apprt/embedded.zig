@@ -365,6 +365,17 @@ pub const Platform = union(PlatformTag) {
         hdc: ?*anyopaque,
         /// The OpenGL rendering context.
         hglrc: ?*anyopaque,
+        /// External D3D11 device (ID3D11Device*) for SwapChainPanel mode.
+        /// When set, ghostty uses this device instead of creating its own.
+        d3d_device: ?*anyopaque = null,
+        /// External swap chain (IDXGISwapChain1*) for SwapChainPanel mode.
+        /// When set, ghostty renders into this swap chain.
+        swap_chain: ?*anyopaque = null,
+        /// DComposition surface handle for SwapChainPanel integration.
+        /// When set, ghostty creates its own device + swap chain on its
+        /// renderer thread, bound to this surface. The caller must already
+        /// have bound the handle to the panel via SetSwapChainHandle.
+        composition_surface_handle: ?*anyopaque = null,
     } else void;
 
     // The C ABI compatible version of this union. The tag is expected
@@ -382,6 +393,9 @@ pub const Platform = union(PlatformTag) {
             hwnd: ?*anyopaque,
             hdc: ?*anyopaque,
             hglrc: ?*anyopaque,
+            d3d_device: ?*anyopaque,
+            swap_chain: ?*anyopaque,
+            composition_surface_handle: ?*anyopaque,
         },
     };
 
@@ -411,6 +425,9 @@ pub const Platform = union(PlatformTag) {
                     .hwnd = hwnd,
                     .hdc = config.hdc,
                     .hglrc = config.hglrc,
+                    .d3d_device = config.d3d_device,
+                    .swap_chain = config.swap_chain,
+                    .composition_surface_handle = config.composition_surface_handle,
                 } };
             } else error.UnsupportedPlatform,
         };
@@ -1600,6 +1617,16 @@ pub const CAPI = struct {
     /// Returns the userdata associated with the surface.
     export fn ghostty_surface_userdata(surface: *Surface) ?*anyopaque {
         return surface.userdata;
+    }
+
+    /// Returns the DirectX swap chain (IDXGISwapChain1*) for SwapChainPanel integration.
+    /// Returns null on non-DirectX backends or if the device is not yet created.
+    export fn ghostty_surface_swap_chain(surface: *Surface) ?*anyopaque {
+        const Api = @TypeOf(surface.core_surface.renderer.api);
+        if (comptime @hasDecl(Api, "getSwapChain")) {
+            return surface.core_surface.renderer.api.getSwapChain();
+        }
+        return null;
     }
 
     /// Returns the app associated with a surface.

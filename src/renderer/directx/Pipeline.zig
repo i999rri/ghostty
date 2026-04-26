@@ -55,6 +55,30 @@ var device_handles: [MAX_SOURCES][MAX_DEVICES]DeviceHandle = [_][MAX_DEVICES]Dev
     [_]DeviceHandle{.{}} ** MAX_DEVICES,
 } ** MAX_SOURCES;
 
+// --- Compiled shader blob cache (device-independent) ---
+// D3DCompile output is the same regardless of device, so we cache it
+// per source ID to avoid recompilation when creating new tabs/surfaces.
+
+const BlobCache = struct {
+    vs_bytecode: ?[*]const u8 = null,
+    vs_size: u32 = 0,
+    ps_bytecode: ?[*]const u8 = null,
+    ps_size: u32 = 0,
+};
+
+var blob_cache: [MAX_SOURCES]BlobCache = [_]BlobCache{.{}} ** MAX_SOURCES;
+
+/// Seed the blob cache with precompiled CSO data.
+/// This must be called after storeSource so self.id is set.
+pub fn seedBlobCache(self: *const Self, vs_cso: []const u8, ps_cso: []const u8) void {
+    if (self.id == 0 or self.id >= MAX_SOURCES) return;
+    const cache = &blob_cache[self.id];
+    cache.vs_bytecode = vs_cso.ptr;
+    cache.vs_size = @intCast(vs_cso.len);
+    cache.ps_bytecode = ps_cso.ptr;
+    cache.ps_size = @intCast(ps_cso.len);
+}
+
 pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
     const shaders_mod = @import("shaders.zig");
     const lt: LayoutType = if (VertexAttributes) |VA| blk: {
@@ -104,22 +128,18 @@ pub fn getHandle(self: Self, device: ?*dx.DxDevice) ?*dx.DxPipeline {
         if (free_slot == null and slot.device == null) free_slot = idx;
     }
 
-    const src = &sources[self.id];
-    if (src.vs == null or src.ps == null) return null;
-
-    // Compile + create on this device.
-    const vs = dx.dx_compile_shader(src.vs, src.vs_len, "vs_main", "vs_5_0");
-    const ps = dx.dx_compile_shader(src.ps, src.ps_len, "ps_main", "ps_5_0");
-    defer dx.dx_free_compiled_shader(vs);
-    defer dx.dx_free_compiled_shader(ps);
-
-    if (vs.bytecode == null or ps.bytecode == null) return null;
+    // Use precompiled shader blobs (CSO). No runtime D3DCompile.
+    const cache = &blob_cache[self.id];
+    const vs_bytecode = cache.vs_bytecode orelse return null;
+    const vs_size = cache.vs_size;
+    const ps_bytecode = cache.ps_bytecode orelse return null;
+    const ps_size = cache.ps_size;
 
     const h = switch (self.layout_type) {
-        .cell_text => dx.dx_create_cell_text_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size),
-        .bg_image => dx.dx_create_bg_image_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size),
-        .image => dx.dx_create_image_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size),
-        .none => dx.dx_create_pipeline(device, vs.bytecode, vs.size, ps.bytecode, ps.size, null, 0),
+        .cell_text => dx.dx_create_cell_text_pipeline(device, @ptrCast(@constCast(vs_bytecode)), vs_size, @ptrCast(@constCast(ps_bytecode)), ps_size),
+        .bg_image => dx.dx_create_bg_image_pipeline(device, @ptrCast(@constCast(vs_bytecode)), vs_size, @ptrCast(@constCast(ps_bytecode)), ps_size),
+        .image => dx.dx_create_image_pipeline(device, @ptrCast(@constCast(vs_bytecode)), vs_size, @ptrCast(@constCast(ps_bytecode)), ps_size),
+        .none => dx.dx_create_pipeline(device, @ptrCast(@constCast(vs_bytecode)), vs_size, @ptrCast(@constCast(ps_bytecode)), ps_size, null, 0),
     };
 
     // Cache for this device.

@@ -32,9 +32,15 @@ pub const swap_chain_count = 2;
 /// DirectComposition visual so the GPU can stop compositing hidden surfaces.
 /// Safe to call from the renderer thread.
 pub fn setVisible(self: *DirectX, visible: bool) void {
-    _ = self;
-    const dev = current_device orelse return;
+    const dev = self.device orelse return;
     dx.dx_set_visible(dev, visible);
+}
+
+/// Returns the IDXGISwapChain1* for SwapChainPanel integration.
+/// Returns null if no device exists. Caller does NOT own the reference.
+pub fn getSwapChain(self: *DirectX) ?*anyopaque {
+    const dev = self.device orelse return null;
+    return dx.dx_get_swap_chain(dev);
 }
 
 /// Called from the apprt updateSize path (main thread) to update the
@@ -113,10 +119,22 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     const w: u32 = @intCast(@max(rect.right - rect.left, 1));
     const h: u32 = @intCast(@max(rect.bottom - rect.top, 1));
 
-    const dev = dx.dx_create(hwnd, w, h) orelse return;
+    // Three creation paths, in priority order:
+    //  1. composition_surface_handle: ghostty owns device+swap chain on this
+    //     thread (SINGLETHREADED, matches Windows Terminal AtlasEngine).
+    //     Required for stable rendering on NVIDIA with SwapChainPanel.
+    //  2. d3d_device + swap_chain: caller-provided externals (legacy path).
+    //  3. hwnd only: ghostty creates its own DComp visual (standalone mode).
+    const platform = surface.platform.windows;
+    const dev = if (platform.composition_surface_handle != null)
+        dx.dx_create_for_composition_surface(platform.composition_surface_handle, w, h)
+    else if (platform.d3d_device != null and platform.swap_chain != null)
+        dx.dx_create_from_swap_chain(platform.d3d_device, platform.swap_chain, w, h)
+    else
+        dx.dx_create(hwnd, w, h);
+    if (dev == null) return;
     self_mut.device = dev;
     current_device = dev;
-    // Set initial window size on the newly created device
     dx.dx_set_window_size(dev, w, h);
 }
 
@@ -129,8 +147,11 @@ pub fn displayRealized(self: *const DirectX) void {
 }
 
 pub fn drawFrameStart(self: *DirectX) void {
-    _ = self;
-    const dev = current_device orelse return;
+    const dev = self.device orelse return;
+    // Wait for DXGI to be ready for the next frame. Throttles CPU based
+    // on GPU/composition pace. No-op for swap chains without waitable.
+    dx.dx_wait_frame_latency(dev);
+    current_device = dev; // sync for Buffer/Texture/Sampler
     var w: u32 = 0;
     var h: u32 = 0;
     dx.dx_get_backbuffer_size(dev, &w, &h);
@@ -142,14 +163,14 @@ pub fn drawFrameStart(self: *DirectX) void {
 }
 
 pub fn drawFrameEnd(self: *DirectX) void {
-    _ = self;
-    const dev = current_device orelse return;
-    dx.dx_present(dev, false);
+    const dev = self.device orelse return;
+    // VSync to match SwapChainPanel/DComp composition cadence.
+    // With FRAME_LATENCY_WAITABLE_OBJECT, vsync prevents tearing/flicker.
+    dx.dx_present(dev, true);
 }
 
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
-    _ = self;
-    const dev = current_device orelse return .{ .width = 960, .height = 640 };
+    const dev = self.device orelse return .{ .width = 960, .height = 640 };
 
     // Read window size set by main thread (WM_SIZE → dx_notify_resize).
     // Cannot call GetClientRect from renderer thread (cross-thread deadlock).
