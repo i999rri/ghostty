@@ -530,11 +530,30 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
 
 void dx_destroy(DxDevice* dev) {
     if (!dev) return;
-    // ClearState + Flush trigger deferred destruction of DXGI flip-model
-    // swap chains. Without this, creating a new swap chain on the same
-    // HWND/IWindow/composition surface fails with DXGI ERROR #297.
-    // We then block on a query event so the GPU actually finishes pending
-    // work before we Release the swap chain — Flush only schedules.
+
+    // Step 1: unbind the backbuffer's RTV from the context. Without this,
+    // the context retains a reference to the backbuffer and Release on the
+    // swap chain doesn't drop its last ref.
+    if (dev->context) {
+        ID3D11DeviceContext_ClearState(dev->context);
+    }
+
+    // Step 2: release everything that holds a reference to the backbuffer,
+    // then the swap chain itself.
+    if (dev->backbuffer_rtv) {
+        ID3D11RenderTargetView_Release(dev->backbuffer_rtv);
+        dev->backbuffer_rtv = NULL;
+    }
+    if (dev->swap_chain) {
+        IDXGISwapChain_Release(dev->swap_chain);
+        dev->swap_chain = NULL;
+    }
+
+    // Step 3: ClearState + Flush AFTER releasing the swap chain to force
+    // D3D11's deferred destruction queue to actually run. Without this,
+    // the next CreateSwapChainForCompositionSurfaceHandle on a sibling
+    // composition surface fails with DXGI ERROR #297. Then GPU sync via
+    // a query event so any in-flight work fully drains.
     if (dev->context && dev->device) {
         ID3D11DeviceContext_ClearState(dev->context);
         ID3D11DeviceContext_Flush(dev->context);
@@ -554,6 +573,8 @@ void dx_destroy(DxDevice* dev) {
             ID3D11Query_Release(query);
         }
     }
+
+    // Step 4: release the rest.
     if (dev->dcomp_visual) IDCompositionVisual_Release(dev->dcomp_visual);
     if (dev->dcomp_target) IDCompositionTarget_Release(dev->dcomp_target);
     if (dev->dcomp_device) IDCompositionDevice_Release(dev->dcomp_device);
@@ -561,8 +582,6 @@ void dx_destroy(DxDevice* dev) {
     if (dev->rasterizer_state) ID3D11RasterizerState_Release(dev->rasterizer_state);
     if (dev->blend_off) ID3D11BlendState_Release(dev->blend_off);
     if (dev->blend_on) ID3D11BlendState_Release(dev->blend_on);
-    if (dev->backbuffer_rtv) ID3D11RenderTargetView_Release(dev->backbuffer_rtv);
-    if (dev->swap_chain) IDXGISwapChain_Release(dev->swap_chain);
     if (dev->context) ID3D11DeviceContext_Release(dev->context);
     if (dev->device) ID3D11Device_Release(dev->device);
     free(dev);
