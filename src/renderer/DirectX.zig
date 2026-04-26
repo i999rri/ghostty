@@ -81,8 +81,14 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
 pub fn deinit(self: *DirectX) void {
     if (self.device) |dev| dx.dx_destroy(dev);
     self.device = null;
-    // Note: current_device is threadlocal, only clear if we're on the renderer thread.
-    // It's safe to leave stale — threadEnter sets it on the next surface.
+    // Clear the calling thread's threadlocal device pointer. Surface.deinit
+    // calls renderer.threadEnter(rt_surface) on its own (non-renderer) thread
+    // before invoking renderer.deinit, which sets current_device for that
+    // thread to a fresh device. Without clearing here, that thread keeps a
+    // dangling pointer to a freed device — the next surface's Renderer.init
+    // running on the same thread reads it via Texture.init/Buffer.init and
+    // crashes inside dx_create_texture / dx_create_buffer.
+    current_device = null;
     self.* = undefined;
 }
 
