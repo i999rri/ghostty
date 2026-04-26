@@ -161,6 +161,28 @@ fn logFn(
         nosuspend stderr.print(level_txt ++ prefix ++ format ++ "\n", args) catch break :stderr;
         nosuspend stderr.flush() catch break :stderr;
     }
+
+    // Windows: route logs to OutputDebugStringA so a host process with
+    // no console (WinUI/WPF/etc.) can capture them via DebugView or the
+    // VS Output window. Independent of stderr — stderr is silent under
+    // a GUI host so we always emit here on Windows.
+    windows: {
+        if (comptime builtin.target.os.tag != .windows) break :windows;
+
+        const W = struct {
+            extern "kernel32" fn OutputDebugStringA(lpOutputString: [*:0]const u8) callconv(.winapi) void;
+        };
+
+        const prefix = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
+        const level_txt = comptime level.asText();
+        var buf: [1024]u8 = undefined;
+        const formatted = std.fmt.bufPrintZ(
+            &buf,
+            level_txt ++ prefix ++ format ++ "\n",
+            args,
+        ) catch break :windows;
+        W.OutputDebugStringA(formatted.ptr);
+    }
 }
 
 pub const std_options: std.Options = .{
