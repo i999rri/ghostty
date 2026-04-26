@@ -150,7 +150,8 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     //     Required for stable rendering on NVIDIA with SwapChainPanel.
     //  2. d3d_device + swap_chain: caller-provided externals (legacy path).
     //  3. hwnd only: ghostty creates its own DComp visual (standalone mode).
-    const dev = if (platform.composition_surface_handle != null)
+    const used_composition_surface = platform.composition_surface_handle != null;
+    const dev = if (used_composition_surface)
         dx.dx_create_for_composition_surface(platform.composition_surface_handle, w, h)
     else if (platform.d3d_device != null and platform.swap_chain != null)
         dx.dx_create_from_swap_chain(platform.d3d_device, platform.swap_chain, w, h)
@@ -160,6 +161,17 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     self_mut.device = dev;
     current_device = dev;
     dx.dx_set_window_size(dev, w, h);
+
+    // Composition-surface path: notify host that the swap chain has been
+    // created and bound to its handle, so it can call SetSwapChainHandle
+    // on the UI thread. This matches MS docs / WT AtlasEngine ordering
+    // (handle → swap chain → SetSwapChainHandle). Fired on the renderer
+    // thread; the host is responsible for the UI-thread hop.
+    if (used_composition_surface) {
+        if (platform.swap_chain_ready_cb) |cb| {
+            cb(platform.swap_chain_ready_userdata);
+        }
+    }
 }
 
 pub fn threadExit(self: *const DirectX) void {

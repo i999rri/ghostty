@@ -373,9 +373,22 @@ pub const Platform = union(PlatformTag) {
         swap_chain: ?*anyopaque = null,
         /// DComposition surface handle for SwapChainPanel integration.
         /// When set, ghostty creates its own device + swap chain on its
-        /// renderer thread, bound to this surface. The caller must already
-        /// have bound the handle to the panel via SetSwapChainHandle.
+        /// renderer thread, bound to this surface.
+        ///
+        /// If `swap_chain_ready_cb` is null, the caller must already have
+        /// bound the handle to the panel via `SetSwapChainHandle` before
+        /// calling `ghostty_surface_new`. If the callback is set, it fires
+        /// on the renderer thread after the swap chain is created — the
+        /// caller should dispatch to the UI thread and call
+        /// `SetSwapChainHandle` then. The latter matches Microsoft's
+        /// documented order and Windows Terminal AtlasEngine.
         composition_surface_handle: ?*anyopaque = null,
+        /// Fires on the renderer thread immediately after the swap chain
+        /// has been created and bound to `composition_surface_handle`.
+        /// Used so the host can call `SetSwapChainHandle` on the UI thread
+        /// AFTER the swap chain exists, per MS docs / WT AtlasEngine.
+        swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void = null,
+        swap_chain_ready_userdata: ?*anyopaque = null,
         /// Initial swap chain dimensions. When non-zero, used instead of
         /// querying the HWND's client rect — saves an immediate ResizeBuffers
         /// on the first frame when the host knows the actual panel size.
@@ -401,6 +414,8 @@ pub const Platform = union(PlatformTag) {
             d3d_device: ?*anyopaque,
             swap_chain: ?*anyopaque,
             composition_surface_handle: ?*anyopaque,
+            swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void,
+            swap_chain_ready_userdata: ?*anyopaque,
             initial_width: u32,
             initial_height: u32,
         },
@@ -435,6 +450,8 @@ pub const Platform = union(PlatformTag) {
                     .d3d_device = config.d3d_device,
                     .swap_chain = config.swap_chain,
                     .composition_surface_handle = config.composition_surface_handle,
+                    .swap_chain_ready_cb = config.swap_chain_ready_cb,
+                    .swap_chain_ready_userdata = config.swap_chain_ready_userdata,
                     .initial_width = config.initial_width,
                     .initial_height = config.initial_height,
                 } };
