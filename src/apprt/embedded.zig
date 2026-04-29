@@ -377,16 +377,22 @@ pub const Platform = union(PlatformTag) {
         ///
         /// If `swap_chain_ready_cb` is null, the caller must already have
         /// bound the handle to the panel via `SetSwapChainHandle` before
-        /// calling `ghostty_surface_new`. If the callback is set, it fires
-        /// on the renderer thread after the swap chain is created — the
-        /// caller should dispatch to the UI thread and call
-        /// `SetSwapChainHandle` then. The latter matches Microsoft's
-        /// documented order and Windows Terminal AtlasEngine.
+        /// calling `ghostty_surface_new`. If the callback is set, the
+        /// caller should dispatch to the UI thread from the callback and
+        /// call `SetSwapChainHandle` then — see `swap_chain_ready_cb` for
+        /// the exact firing semantics.
         composition_surface_handle: ?*anyopaque = null,
-        /// Fires on the renderer thread immediately after the swap chain
-        /// has been created and bound to `composition_surface_handle`.
-        /// Used so the host can call `SetSwapChainHandle` on the UI thread
-        /// AFTER the swap chain exists, per MS docs / WT AtlasEngine.
+        /// Fires on the renderer thread exactly once per surface, after
+        /// the renderer has presented its first frame to
+        /// `composition_surface_handle` (or from surface teardown if no
+        /// frame was ever presented — gives the host a chance to free
+        /// its userdata regardless).
+        ///
+        /// The "first present" semantic means the swap chain is guaranteed
+        /// to have displayable content when this fires, so the host can
+        /// safely make its SwapChainPanel visible without the user seeing
+        /// an empty panel briefly. (Firing at swap-chain-creation would be
+        /// premature — the back buffer is undefined until first present.)
         swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void = null,
         swap_chain_ready_userdata: ?*anyopaque = null,
         /// Initial swap chain dimensions. When non-zero, used instead of

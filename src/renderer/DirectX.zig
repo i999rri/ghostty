@@ -70,6 +70,16 @@ blending: configpkg.Config.AlphaBlending,
 last_target: ?Target = null,
 device: ?*dx.DxDevice = null,
 
+/// Stored in threadEnter when composition_surface_handle is in use.
+/// Fired exactly once: either after the renderer's first real
+/// dx_present (drawFrameEnd), or from deinit if no frame was ever
+/// presented (e.g. surface created and destroyed too fast). The
+/// "first present" semantic lets the host defer making the
+/// SwapChainPanel visible until the swap chain actually has content.
+swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void = null,
+swap_chain_ready_userdata: ?*anyopaque = null,
+swap_chain_ready_fired: bool = false,
+
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
     log.info("initializing DirectX 11 renderer", .{});
     return .{
@@ -79,6 +89,18 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) error{}!DirectX {
 }
 
 pub fn deinit(self: *DirectX) void {
+    // If no frame was ever presented, fire the swap-chain-ready callback
+    // here so the host can clean up its userdata. Without this, a tab
+    // opened and immediately closed would leak whatever the host attached
+    // to swap_chain_ready_userdata. The host's implementation should
+    // already handle "fired but tab is being torn down" via its own
+    // cancel mechanism (see GhosttyWin32 SwapChainAttachRequest::cancelled).
+    if (!self.swap_chain_ready_fired) {
+        self.swap_chain_ready_fired = true;
+        if (self.swap_chain_ready_cb) |cb| {
+            cb(self.swap_chain_ready_userdata);
+        }
+    }
     if (self.device) |dev| dx.dx_destroy(dev);
     self.device = null;
     // Clear the calling thread's threadlocal device pointer. Surface.deinit
@@ -162,15 +184,16 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     current_device = dev;
     dx.dx_set_window_size(dev, w, h);
 
-    // Composition-surface path: notify host that the swap chain has been
-    // created and bound to its handle, so it can call SetSwapChainHandle
-    // on the UI thread. This matches MS docs / WT AtlasEngine ordering
-    // (handle → swap chain → SetSwapChainHandle). Fired on the renderer
-    // thread; the host is responsible for the UI-thread hop.
+    // Composition-surface path: stash the host's "ready" callback so we
+    // can fire it once the renderer has actually presented its first
+    // frame (see drawFrameEnd). Firing here at swap-chain-creation would
+    // be premature — the back buffer is undefined memory until the first
+    // present, so the host attaching it to a panel would briefly composite
+    // garbage / transparency. By deferring, the host can wait until the
+    // swap chain has displayable content before making the panel visible.
     if (used_composition_surface) {
-        if (platform.swap_chain_ready_cb) |cb| {
-            cb(platform.swap_chain_ready_userdata);
-        }
+        self_mut.swap_chain_ready_cb = platform.swap_chain_ready_cb;
+        self_mut.swap_chain_ready_userdata = platform.swap_chain_ready_userdata;
     }
 }
 
@@ -203,6 +226,17 @@ pub fn drawFrameEnd(self: *DirectX) void {
     // VSync to match SwapChainPanel/DComp composition cadence.
     // With FRAME_LATENCY_WAITABLE_OBJECT, vsync prevents tearing/flicker.
     dx.dx_present(dev, true);
+
+    // First-present notification. The swap chain back buffer is undefined
+    // memory until something is presented, so we wait until here — after
+    // the first real frame is on screen — to tell the host its panel can
+    // be made visible without flicker. Fired exactly once per surface.
+    if (!self.swap_chain_ready_fired) {
+        self.swap_chain_ready_fired = true;
+        if (self.swap_chain_ready_cb) |cb| {
+            cb(self.swap_chain_ready_userdata);
+        }
+    }
 }
 
 pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
