@@ -268,7 +268,7 @@ pub fn initAtlasTexture(self: *const DirectX, atlas: anytype) !Texture {
     const format: Texture.Options.Format = switch (atlas.format) {
         .grayscale => .red,
         .bgra => .bgra,
-        else => .rgba,
+        else => @panic("unsupported atlas format for DirectX texture"),
     };
     return Texture.init(.{ .format = format }, atlas.size, atlas.size, atlas.data);
 }
