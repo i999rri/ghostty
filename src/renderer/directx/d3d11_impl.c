@@ -869,13 +869,32 @@ struct DxTexture {
     DXGI_FORMAT format;
 };
 
-DxTexture* dx_create_texture(DxDevice* dev, uint32_t width, uint32_t height, uint32_t format, const void* data) {
+DxTexture* dx_create_texture(DxDevice* dev, uint32_t width, uint32_t height, uint32_t format, const void* data, uint32_t data_len) {
     if (!dev) return NULL;
+
+    // Defensive length check that mirrors `Texture.planTextureUpload` on
+    // the Zig side. The Zig wrapper validates first and refuses to call
+    // us on mismatch, so reaching this branch from in-tree code means a
+    // bug; we still bail out instead of letting D3D11 over-read.
+    DXGI_FORMAT dxgi_format = (DXGI_FORMAT)format;
+    uint32_t bpp = (dxgi_format == DXGI_FORMAT_R8_UNORM) ? 1 : 4;
+    if (data) {
+        // u64 to avoid the same overflow trap planTextureUpload guards.
+        uint64_t required = (uint64_t)width * (uint64_t)height * (uint64_t)bpp;
+        if ((uint64_t)data_len < required) {
+            char buf[256];
+            sprintf(buf, "D3D11: dx_create_texture rejected: %ux%u format=%u needs %llu bytes, got %u\n",
+                width, height, format, (unsigned long long)required, data_len);
+            OutputDebugStringA(buf);
+            return NULL;
+        }
+    }
+
     DxTexture* tex = (DxTexture*)calloc(1, sizeof(DxTexture));
     if (!tex) return NULL;
     tex->width = width;
     tex->height = height;
-    tex->format = (DXGI_FORMAT)format;
+    tex->format = dxgi_format;
 
     D3D11_TEXTURE2D_DESC td = {0};
     td.Width = width;
@@ -887,7 +906,6 @@ DxTexture* dx_create_texture(DxDevice* dev, uint32_t width, uint32_t height, uin
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
-    uint32_t bpp = (tex->format == DXGI_FORMAT_R8_UNORM) ? 1 : 4;
     D3D11_SUBRESOURCE_DATA sd = { .pSysMem = data, .SysMemPitch = width * bpp };
     HRESULT hr = ID3D11Device_CreateTexture2D(dev->device, &td, data ? &sd : NULL, &tex->texture);
     if (FAILED(hr)) { free(tex); return NULL; }
@@ -908,9 +926,22 @@ void dx_destroy_texture(DxTexture* tex) {
     free(tex);
 }
 
-void dx_update_texture_region(DxDevice* dev, DxTexture* tex, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* data) {
+void dx_update_texture_region(DxDevice* dev, DxTexture* tex, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* data, uint32_t data_len) {
     if (!dev || !tex || !data) return;
     uint32_t bpp = (tex->format == DXGI_FORMAT_R8_UNORM) ? 1 : 4;
+
+    // Same defensive length check as dx_create_texture. UpdateSubresource
+    // reads `h * (w * bpp)` bytes from `data`; a too-short buffer crashes
+    // the NVIDIA driver inside Present rather than here.
+    uint64_t required = (uint64_t)w * (uint64_t)h * (uint64_t)bpp;
+    if ((uint64_t)data_len < required) {
+        char buf[256];
+        sprintf(buf, "D3D11: dx_update_texture_region rejected: %ux%u bpp=%u needs %llu bytes, got %u\n",
+            w, h, bpp, (unsigned long long)required, data_len);
+        OutputDebugStringA(buf);
+        return;
+    }
+
     D3D11_BOX box = { x, y, 0, x + w, y + h, 1 };
     __try {
         ID3D11DeviceContext_UpdateSubresource(dev->context, (ID3D11Resource*)tex->texture, 0, &box, data, w * bpp, 0);

@@ -53,10 +53,20 @@ void dx_bind_constant_buffer(DxDevice* dev, DxBuffer* buf, uint32_t slot, bool v
 void dx_bind_srv_buffer(DxDevice* dev, DxBuffer* buf, uint32_t slot, uint32_t element_size);
 
 // Texture operations
+//
+// `data_len` is the length of the buffer pointed to by `data` in bytes.
+// The C side asserts `data_len >= height * width * bpp(format)` before
+// passing the pointer to D3D11; the same check happens (with typed errors)
+// in `Texture.planTextureUpload`. Without it D3D11 walks past the end of
+// the buffer when uploading and can AV in `nvwgf2umx.dll` — same bug
+// class as the buffer over-read fixed in 85e6e936b.
 typedef struct DxTexture DxTexture;
-DxTexture* dx_create_texture(DxDevice* dev, uint32_t width, uint32_t height, uint32_t format, const void* data);
+DxTexture* dx_create_texture(DxDevice* dev, uint32_t width, uint32_t height,
+                              uint32_t format, const void* data, uint32_t data_len);
 void dx_destroy_texture(DxTexture* tex);
-void dx_update_texture_region(DxDevice* dev, DxTexture* tex, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void* data);
+void dx_update_texture_region(DxDevice* dev, DxTexture* tex,
+                               uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                               const void* data, uint32_t data_len);
 void dx_bind_texture(DxDevice* dev, DxTexture* tex, uint32_t slot);
 
 // Sampler
