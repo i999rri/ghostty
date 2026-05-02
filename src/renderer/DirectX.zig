@@ -101,7 +101,20 @@ pub fn deinit(self: *DirectX) void {
             cb(self.swap_chain_ready_userdata);
         }
     }
-    if (self.device) |dev| dx.dx_destroy(dev);
+    if (self.device) |dev| {
+        // Drop every Pipeline cache entry that was compiled against this
+        // device BEFORE we destroy the device itself. Skipping this step
+        // leaves stale (device_ptr, pipeline*) slots in Pipeline.zig's
+        // global cache; if the heap allocator later hands a new device
+        // the same address, getHandle would match the dead slot and
+        // return a pipeline whose underlying ID3D11VertexShader/PixelShader
+        // belongs to the destroyed device — which trips the
+        // "First parameter does not match device" D3D11 corruption seen
+        // when many tabs are torn down in sequence.
+        const Pipeline = @import("directx/Pipeline.zig");
+        Pipeline.invalidateDevice(dev);
+        dx.dx_destroy(dev);
+    }
     self.device = null;
     // Clear the calling thread's threadlocal device pointer. Surface.deinit
     // calls renderer.threadEnter on its own (non-renderer) thread before
