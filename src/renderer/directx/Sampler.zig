@@ -8,6 +8,10 @@ const Self = @This();
 pub const Error = error{DirectXFailed};
 
 pub const Options = struct {
+    /// Device this sampler is created against. Populated by the
+    /// renderer from its own `self.device`. Samplers don't need
+    /// the device after creation, so we don't store it on `Self`.
+    device: ?*dx.DxDevice = null,
     min_filter: Filter = .linear,
     mag_filter: Filter = .linear,
     wrap_s: Wrap = .clamp_to_edge,
@@ -27,7 +31,7 @@ const D3D11_TEXTURE_ADDRESS_WRAP: u32 = 1;
 dx_handle: ?*dx.DxSampler = null,
 
 pub fn init(opts: Options) Error!Self {
-    const dev = DirectX.current_device;
+    const dev = opts.device;
     var handle: ?*dx.DxSampler = null;
 
     if (dev != null) {

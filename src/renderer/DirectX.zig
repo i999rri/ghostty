@@ -58,10 +58,6 @@ pub const native_render_loop = true;
 
 const log = std.log.scoped(.directx);
 
-/// Per-thread device handle, accessible by Buffer/Texture/etc.
-/// Each renderer thread sets its own copy in threadEnter.
-pub threadlocal var current_device: ?*dx.DxDevice = null;
-
 // C API from d3d11_impl.c — imported via build-system TranslateC for type safety
 pub const dx = @import("d3d11-c");
 
@@ -111,19 +107,10 @@ pub fn deinit(self: *DirectX) void {
         // belongs to the destroyed device — which trips the
         // "First parameter does not match device" D3D11 corruption seen
         // when many tabs are torn down in sequence.
-        const Pipeline = @import("directx/Pipeline.zig");
         Pipeline.invalidateDevice(dev);
         dx.dx_destroy(dev);
     }
     self.device = null;
-    // Clear the calling thread's threadlocal device pointer. Surface.deinit
-    // calls renderer.threadEnter on its own (non-renderer) thread before
-    // invoking renderer.deinit; that threadEnter points current_device at
-    // our existing device. Without clearing here, after we dx_destroy that
-    // thread keeps a dangling pointer to a freed device — the next surface's
-    // Renderer.init running on the same thread reads it via Texture.init /
-    // Buffer.init and crashes inside dx_create_texture / dx_create_buffer.
-    current_device = null;
     self.* = undefined;
 }
 
@@ -143,17 +130,15 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     const self_mut: *DirectX = @constCast(self);
 
     // If a device already exists, this call is from Surface.deinit on the
-    // UI thread ("become the active rendering thread again") purely to set
-    // up this thread's threadlocal current_device so the subsequent
-    // renderer.deinit can clean up. Mirror OpenGL.zig's wglMakeCurrent
-    // semantics — attach to the existing device, no D3D churn. Without
-    // this, every tab close wastes one D3D11CreateDevice + dx_destroy pair
+    // UI thread ("become the active rendering thread again") purely to
+    // satisfy the lifecycle contract — Buffer/Texture/Sampler now read
+    // their device from `self.device` directly, so no thread-local fixup
+    // is needed. Mirror OpenGL.zig's wglMakeCurrent semantics — attach to
+    // the existing device, no D3D churn. Without this short-circuit, every
+    // tab close would waste one D3D11CreateDevice + dx_destroy pair
     // (driver alloc/free at 2x the rate it would otherwise be), which
     // crashes NVIDIA's user-mode driver under stress.
-    if (self_mut.device) |existing| {
-        current_device = existing;
-        return;
-    }
+    if (self_mut.device != null) return;
 
     const hwnd: ?*anyopaque = @ptrCast(surface.platform.windows.hwnd);
     if (hwnd == null) {
@@ -194,7 +179,6 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
         dx.dx_create(hwnd, w, h);
     if (dev == null) return;
     self_mut.device = dev;
-    current_device = dev;
     dx.dx_set_window_size(dev, w, h);
 
     // Composition-surface path: stash the host's "ready" callback so we
@@ -223,7 +207,6 @@ pub fn drawFrameStart(self: *DirectX) void {
     // Wait for DXGI to be ready for the next frame. Throttles CPU based
     // on GPU/composition pace. No-op for swap chains without waitable.
     dx.dx_wait_frame_latency(dev);
-    current_device = dev; // sync for Buffer/Texture/Sampler
     var w: u32 = 0;
     var h: u32 = 0;
     dx.dx_get_backbuffer_size(dev, &w, &h);
@@ -311,64 +294,58 @@ pub fn presentLastTarget(self: *DirectX) !void {
 }
 
 pub fn initAtlasTexture(self: *const DirectX, atlas: anytype) !Texture {
-    _ = self;
     const format: Texture.Options.Format = switch (atlas.format) {
         .grayscale => .red,
         .bgra => .bgra,
         else => @panic("unsupported atlas format for DirectX texture"),
     };
-    return Texture.init(.{ .format = format }, atlas.size, atlas.size, atlas.data);
+    return Texture.init(
+        .{ .device = self.device, .format = format },
+        atlas.size,
+        atlas.size,
+        atlas.data,
+    );
 }
 
 pub fn initTexture(self: *const DirectX, opts: anytype) !Texture {
-    _ = self;
-    return Texture.init(.{}, opts.width, opts.height, opts.data);
+    return Texture.init(.{ .device = self.device }, opts.width, opts.height, opts.data);
 }
 
 pub inline fn bufferOptions(self: DirectX) bufferpkg.Options {
-    _ = self;
-    return .{ .target = .array, .usage = .dynamic_draw };
+    return .{ .device = self.device, .target = .array, .usage = .dynamic_draw };
 }
 
 pub inline fn uniformBufferOptions(self: DirectX) bufferpkg.Options {
-    _ = self;
-    return .{ .target = .uniform, .usage = .dynamic_draw };
+    return .{ .device = self.device, .target = .uniform, .usage = .dynamic_draw };
 }
 
 pub inline fn fgBufferOptions(self: DirectX) bufferpkg.Options {
-    _ = self;
     // In D3D11, foreground cell data is used as vertex buffer (per-instance)
-    return .{ .target = .array, .usage = .dynamic_draw };
+    return .{ .device = self.device, .target = .array, .usage = .dynamic_draw };
 }
 
 pub inline fn bgBufferOptions(self: DirectX) bufferpkg.Options {
-    _ = self;
-    return .{ .target = .shader_storage, .usage = .dynamic_draw };
+    return .{ .device = self.device, .target = .shader_storage, .usage = .dynamic_draw };
 }
 
 pub inline fn bgImageBufferOptions(self: DirectX) bufferpkg.Options {
-    _ = self;
-    return .{ .target = .array, .usage = .dynamic_draw };
+    return .{ .device = self.device, .target = .array, .usage = .dynamic_draw };
 }
 
 pub inline fn imageBufferOptions(self: DirectX) bufferpkg.Options {
-    _ = self;
-    return .{ .target = .array, .usage = .dynamic_draw };
+    return .{ .device = self.device, .target = .array, .usage = .dynamic_draw };
 }
 
 pub inline fn imageTextureOptions(self: DirectX, format: anytype, linear: bool) Texture.Options {
-    _ = self;
     _ = format;
     _ = linear;
-    return .{};
+    return .{ .device = self.device };
 }
 
 pub inline fn textureOptions(self: DirectX) Texture.Options {
-    _ = self;
-    return .{};
+    return .{ .device = self.device };
 }
 
 pub inline fn samplerOptions(self: DirectX) Sampler.Options {
-    _ = self;
-    return .{};
+    return .{ .device = self.device };
 }

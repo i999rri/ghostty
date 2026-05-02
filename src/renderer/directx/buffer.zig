@@ -6,6 +6,12 @@ const log = std.log.scoped(.directx);
 pub const RawBuffer = ?*dx.DxBuffer;
 
 pub const Options = struct {
+    /// Device this buffer is bound to. Populated by the renderer
+    /// from its own `self.device`; passed in via Options instead of
+    /// pulled from a threadlocal so the buffer's create/sync calls
+    /// always target the device that originally created it, even on
+    /// threads that never set up a renderer-local device pointer.
+    device: ?*dx.DxDevice = null,
     target: Target = .array,
     usage: Usage = .dynamic_draw,
 
@@ -145,7 +151,7 @@ pub fn Buffer(comptime T: type) type {
         }
 
         pub fn sync(self: *Self, data: []const T) !void {
-            const dev = DirectX.current_device orelse return;
+            const dev = self.opts.device orelse return;
             const plan = planSync(T, self.opts, self.buffer != null, self.len, data.len);
             switch (plan) {
                 .nothing => return,
@@ -176,7 +182,7 @@ pub fn Buffer(comptime T: type) type {
         }
 
         pub fn syncFromArrayLists(self: *Self, lists: []const std.ArrayListUnmanaged(T)) !usize {
-            const dev = DirectX.current_device orelse return 0;
+            const dev = self.opts.device orelse return 0;
 
             var total_len: usize = 0;
             for (lists) |list| {
