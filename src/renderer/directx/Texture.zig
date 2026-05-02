@@ -8,11 +8,15 @@ const Self = @This();
 pub const Error = error{DirectXFailed};
 
 pub const Options = struct {
-    /// Device this texture is created against. Populated by the
-    /// renderer from its own `self.device`. Stored on the texture
-    /// itself so `replaceRegion` can target the same device without
-    /// relying on a threadlocal pointer.
-    device: ?*dx.DxDevice = null,
+    /// Pointer to the renderer's heap-allocated device cell.
+    ///
+    /// Same rationale as `buffer.Options.device_cell`: textures are
+    /// constructed during `FrameState.init` before the D3D11 device
+    /// has been created in `threadEnter`, so we hold a stable pointer
+    /// to the cell and dereference it at create / `replaceRegion`
+    /// time instead of capturing the `null` value that was sitting in
+    /// the cell at init time.
+    device_cell: ?*const ?*dx.DxDevice = null,
     format: Format = .rgba,
     internal_format: InternalFormat = .rgba,
     target: TextureTarget = .texture_2d,
@@ -45,11 +49,14 @@ fn dxgiFormat(format: Options.Format) u32 {
 
 width: usize,
 height: usize,
-device: ?*dx.DxDevice = null,
+/// Stash the cell pointer from Options so `replaceRegion` can read
+/// the current device without re-deriving it. The cell itself lives
+/// in the renderer; we only hold the pointer.
+device_cell: ?*const ?*dx.DxDevice = null,
 dx_handle: ?*dx.DxTexture = null,
 
 pub fn init(opts: Options, width: usize, height: usize, data: ?[]const u8) Error!Self {
-    const dev = opts.device;
+    const dev: ?*dx.DxDevice = if (opts.device_cell) |cell| cell.* else null;
     var handle: ?*dx.DxTexture = null;
 
     if (dev != null and width > 0 and height > 0) {
@@ -61,7 +68,7 @@ pub fn init(opts: Options, width: usize, height: usize, data: ?[]const u8) Error
     return .{
         .width = width,
         .height = height,
-        .device = dev,
+        .device_cell = opts.device_cell,
         .dx_handle = handle,
     };
 }
@@ -71,7 +78,8 @@ pub fn deinit(self: Self) void {
 }
 
 pub fn replaceRegion(self: *Self, offset_x: usize, offset_y: usize, rep_width: usize, rep_height: usize, data: []const u8) !void {
-    const dev = self.device orelse return;
+    const cell = self.device_cell orelse return;
+    const dev = cell.* orelse return;
     if (self.dx_handle) |h| {
         dx.dx_update_texture_region(dev, h, @intCast(offset_x), @intCast(offset_y), @intCast(rep_width), @intCast(rep_height), @ptrCast(data.ptr));
     }

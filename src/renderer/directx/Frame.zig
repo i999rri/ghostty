@@ -18,8 +18,11 @@ pub fn begin(renderer: *Renderer, target: *Target) !Self {
 }
 
 pub fn renderPass(self: *const Self, attachments: []const RenderPass.Options.Attachment) RenderPass {
-    // Pass device handle from the renderer's API
-    return RenderPass.begin(self.renderer.api.device, .{ .attachments = attachments });
+    // Pass device handle from the renderer's API. The device lives in
+    // a heap-allocated cell on the API (see DirectX.device_cell), so
+    // we dereference here to read whatever device threadEnter has put
+    // there.
+    return RenderPass.begin(self.renderer.api.device_cell.*, .{ .attachments = attachments });
 }
 
 pub fn complete(self: *const Self, sync: bool) void {

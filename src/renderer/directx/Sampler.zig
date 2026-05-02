@@ -8,10 +8,14 @@ const Self = @This();
 pub const Error = error{DirectXFailed};
 
 pub const Options = struct {
-    /// Device this sampler is created against. Populated by the
-    /// renderer from its own `self.device`. Samplers don't need
-    /// the device after creation, so we don't store it on `Self`.
-    device: ?*dx.DxDevice = null,
+    /// Pointer to the renderer's heap-allocated device cell.
+    ///
+    /// Same rationale as `buffer.Options.device_cell`: samplers are
+    /// constructed before `threadEnter` creates the D3D11 device, so
+    /// we capture a stable cell pointer here and dereference at
+    /// create time. Samplers don't need the device after creation,
+    /// so we don't store the cell on `Self`.
+    device_cell: ?*const ?*dx.DxDevice = null,
     min_filter: Filter = .linear,
     mag_filter: Filter = .linear,
     wrap_s: Wrap = .clamp_to_edge,
@@ -31,7 +35,7 @@ const D3D11_TEXTURE_ADDRESS_WRAP: u32 = 1;
 dx_handle: ?*dx.DxSampler = null,
 
 pub fn init(opts: Options) Error!Self {
-    const dev = opts.device;
+    const dev: ?*dx.DxDevice = if (opts.device_cell) |cell| cell.* else null;
     var handle: ?*dx.DxSampler = null;
 
     if (dev != null) {
