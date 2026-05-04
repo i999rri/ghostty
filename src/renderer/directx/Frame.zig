@@ -18,8 +18,10 @@ pub fn begin(renderer: *Renderer, target: *Target) !Self {
 }
 
 pub fn renderPass(self: *const Self, attachments: []const RenderPass.Options.Attachment) RenderPass {
-    // Pass device handle from the renderer's API
-    return RenderPass.begin(self.renderer.api.device, .{ .attachments = attachments });
+    // Pass device handle from the renderer's API. The device lives in
+    // a heap-allocated `Presentation` struct on the API, populated by
+    // threadEnter on the renderer thread.
+    return RenderPass.begin(self.renderer.api.presentation.device, .{ .attachments = attachments });
 }
 
 pub fn complete(self: *const Self, sync: bool) void {

@@ -365,6 +365,41 @@ pub const Platform = union(PlatformTag) {
         hdc: ?*anyopaque,
         /// The OpenGL rendering context.
         hglrc: ?*anyopaque,
+        /// External D3D11 device (ID3D11Device*) for SwapChainPanel mode.
+        /// When set, ghostty uses this device instead of creating its own.
+        d3d_device: ?*anyopaque = null,
+        /// External swap chain (IDXGISwapChain1*) for SwapChainPanel mode.
+        /// When set, ghostty renders into this swap chain.
+        swap_chain: ?*anyopaque = null,
+        /// DComposition surface handle for SwapChainPanel integration.
+        /// When set, ghostty creates its own device + swap chain on its
+        /// renderer thread, bound to this surface.
+        ///
+        /// If `swap_chain_ready_cb` is null, the caller must already have
+        /// bound the handle to the panel via `SetSwapChainHandle` before
+        /// calling `ghostty_surface_new`. If the callback is set, the
+        /// caller should dispatch to the UI thread from the callback and
+        /// call `SetSwapChainHandle` then — see `swap_chain_ready_cb` for
+        /// the exact firing semantics.
+        composition_surface_handle: ?*anyopaque = null,
+        /// Fires on the renderer thread exactly once per surface, after
+        /// the renderer has presented its first frame to
+        /// `composition_surface_handle` (or from surface teardown if no
+        /// frame was ever presented — gives the host a chance to free
+        /// its userdata regardless).
+        ///
+        /// The "first present" semantic means the swap chain is guaranteed
+        /// to have displayable content when this fires, so the host can
+        /// safely make its SwapChainPanel visible without the user seeing
+        /// an empty panel briefly. (Firing at swap-chain-creation would be
+        /// premature — the back buffer is undefined until first present.)
+        swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void = null,
+        swap_chain_ready_userdata: ?*anyopaque = null,
+        /// Initial swap chain dimensions. When non-zero, used instead of
+        /// querying the HWND's client rect — saves an immediate ResizeBuffers
+        /// on the first frame when the host knows the actual panel size.
+        initial_width: u32 = 0,
+        initial_height: u32 = 0,
     } else void;
 
     // The C ABI compatible version of this union. The tag is expected
@@ -382,6 +417,13 @@ pub const Platform = union(PlatformTag) {
             hwnd: ?*anyopaque,
             hdc: ?*anyopaque,
             hglrc: ?*anyopaque,
+            d3d_device: ?*anyopaque,
+            swap_chain: ?*anyopaque,
+            composition_surface_handle: ?*anyopaque,
+            swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void,
+            swap_chain_ready_userdata: ?*anyopaque,
+            initial_width: u32,
+            initial_height: u32,
         },
     };
 
@@ -411,6 +453,13 @@ pub const Platform = union(PlatformTag) {
                     .hwnd = hwnd,
                     .hdc = config.hdc,
                     .hglrc = config.hglrc,
+                    .d3d_device = config.d3d_device,
+                    .swap_chain = config.swap_chain,
+                    .composition_surface_handle = config.composition_surface_handle,
+                    .swap_chain_ready_cb = config.swap_chain_ready_cb,
+                    .swap_chain_ready_userdata = config.swap_chain_ready_userdata,
+                    .initial_width = config.initial_width,
+                    .initial_height = config.initial_height,
                 } };
             } else error.UnsupportedPlatform,
         };
@@ -1600,6 +1649,16 @@ pub const CAPI = struct {
     /// Returns the userdata associated with the surface.
     export fn ghostty_surface_userdata(surface: *Surface) ?*anyopaque {
         return surface.userdata;
+    }
+
+    /// Returns the DirectX swap chain (IDXGISwapChain1*) for SwapChainPanel integration.
+    /// Returns null on non-DirectX backends or if the device is not yet created.
+    export fn ghostty_surface_swap_chain(surface: *Surface) ?*anyopaque {
+        const Api = @TypeOf(surface.core_surface.renderer.api);
+        if (comptime @hasDecl(Api, "getSwapChain")) {
+            return surface.core_surface.renderer.api.getSwapChain();
+        }
+        return null;
     }
 
     /// Returns the app associated with a surface.

@@ -80,14 +80,29 @@ pub fn step(self: *Self, s: Step) void {
         .none => 0,
     };
 
-    // Bind vertex buffer (first buffer when pipeline has input layout)
+    // Bind vertex buffer (first buffer when pipeline has input layout).
+    // RawBuffer is itself optional (`?*DxBuffer`), so `buf` here is still
+    // optional after unwrapping the outer slice element. If the inner pointer
+    // is null we MUST skip the draw — the input layout requires slot 0 with a
+    // matching stride; if we draw without rebinding, slot 0 keeps the prior
+    // step's binding (e.g. bg_image's stride-8 buffer) and the GPU reads past
+    // the end into unmapped pages, crashing the NVIDIA driver.
     const has_vertex_data = (s.pipeline.layout_type != .none);
+    var vertex_buffer_bound = false;
     if (has_vertex_data and s.buffers.len > 0) {
-        if (s.buffers[0]) |buf| {
-            if (vertex_stride > 0) {
-                dx.dx_bind_vertex_buffer(dev, buf, vertex_stride, 0);
+        if (s.buffers[0]) |buf_outer| {
+            if (buf_outer) |buf| {
+                if (vertex_stride > 0) {
+                    dx.dx_bind_vertex_buffer(dev, buf, vertex_stride, 0);
+                    vertex_buffer_bound = true;
+                }
             }
         }
+    }
+    if (has_vertex_data and !vertex_buffer_bound) {
+        // No valid vertex buffer — bail before the draw to avoid reading
+        // stale slot 0 state under a different input layout.
+        return;
     }
 
     // Bind textures first (they occupy SRV slots 0..n-1)

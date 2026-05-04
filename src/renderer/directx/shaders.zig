@@ -6,13 +6,25 @@ const Pipeline = @import("Pipeline.zig");
 
 const log = std.log.scoped(.directx);
 
-// Embed HLSL source at comptime (with #include resolved)
+// Embed HLSL source at comptime (with #include resolved) — used as fallback
 const hlsl_common = @embedFile("../shaders/hlsl/common.hlsl");
 const hlsl_bg_color = hlsl_common ++ @embedFile("../shaders/hlsl/bg_color.hlsl");
 const hlsl_cell_bg = hlsl_common ++ @embedFile("../shaders/hlsl/cell_bg.hlsl");
 const hlsl_cell_text = hlsl_common ++ @embedFile("../shaders/hlsl/cell_text.hlsl");
 const hlsl_image = hlsl_common ++ @embedFile("../shaders/hlsl/image.hlsl");
 const hlsl_bg_image = hlsl_common ++ @embedFile("../shaders/hlsl/bg_image.hlsl");
+
+// Precompiled shader blobs (CSO) — eliminates runtime D3DCompile
+const cso_bg_color_vs = @embedFile("../shaders/hlsl/compiled/bg_color_vs.cso");
+const cso_bg_color_ps = @embedFile("../shaders/hlsl/compiled/bg_color_ps.cso");
+const cso_cell_bg_vs = @embedFile("../shaders/hlsl/compiled/cell_bg_vs.cso");
+const cso_cell_bg_ps = @embedFile("../shaders/hlsl/compiled/cell_bg_ps.cso");
+const cso_cell_text_vs = @embedFile("../shaders/hlsl/compiled/cell_text_vs.cso");
+const cso_cell_text_ps = @embedFile("../shaders/hlsl/compiled/cell_text_ps.cso");
+const cso_image_vs = @embedFile("../shaders/hlsl/compiled/image_vs.cso");
+const cso_image_ps = @embedFile("../shaders/hlsl/compiled/image_ps.cso");
+const cso_bg_image_vs = @embedFile("../shaders/hlsl/compiled/bg_image_vs.cso");
+const cso_bg_image_ps = @embedFile("../shaders/hlsl/compiled/bg_image_ps.cso");
 
 // GPU data types (must match HLSL constant buffer layouts)
 pub const Uniforms = extern struct {
@@ -145,15 +157,21 @@ pub const Shaders = struct {
         };
     }
 
-    /// Compile all HLSL shaders on the D3D11 device.
-    /// Called once when the device is available.
-    /// Step 1: Compile HLSL to bytecode (no device needed).
+    /// Register shader sources and precompiled blobs.
+    /// Precompiled CSO blobs are used directly, skipping D3DCompile.
     pub fn storeSource(self: *Shaders) void {
         self.pipelines.bg_color.storeSource(hlsl_bg_color, hlsl_bg_color);
         self.pipelines.cell_bg.storeSource(hlsl_cell_bg, hlsl_cell_bg);
         self.pipelines.cell_text.storeSource(hlsl_cell_text, hlsl_cell_text);
         self.pipelines.image.storeSource(hlsl_image, hlsl_image);
         self.pipelines.bg_image.storeSource(hlsl_bg_image, hlsl_bg_image);
+
+        // Seed blob cache with precompiled CSO — prevents runtime D3DCompile
+        self.pipelines.bg_color.seedBlobCache(cso_bg_color_vs, cso_bg_color_ps);
+        self.pipelines.cell_bg.seedBlobCache(cso_cell_bg_vs, cso_cell_bg_ps);
+        self.pipelines.cell_text.seedBlobCache(cso_cell_text_vs, cso_cell_text_ps);
+        self.pipelines.image.seedBlobCache(cso_image_vs, cso_image_ps);
+        self.pipelines.bg_image.seedBlobCache(cso_bg_image_vs, cso_bg_image_ps);
     }
 
     pub fn deinit(self: *Shaders, alloc: Allocator) void {

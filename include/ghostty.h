@@ -459,6 +459,34 @@ typedef struct {
   void* hwnd;
   void* hdc;
   void* hglrc;
+  void* d3d_device;
+  void* swap_chain;
+  // DirectComposition surface handle (HANDLE) for SwapChainPanel integration.
+  // When set, ghostty creates its own device + swap chain on its renderer
+  // thread, bound to this surface.
+  //
+  // If swap_chain_ready_cb is null, the caller must already have called
+  // ISwapChainPanelNative2::SetSwapChainHandle(handle) on the UI thread
+  // BEFORE invoking ghostty_surface_new. If the callback is set, ghostty
+  // fires it from the renderer thread immediately after the swap chain
+  // is created and bound to this handle — the caller should dispatch
+  // back to its UI thread and call SetSwapChainHandle there. The
+  // callback path matches Microsoft's documented order and the Windows
+  // Terminal AtlasEngine pattern.
+  void* composition_surface_handle;
+  // Optional callback fired on ghostty's renderer thread immediately
+  // after the swap chain is created and bound to
+  // composition_surface_handle. The userdata pointer is passed through
+  // unchanged. Use this to defer SetSwapChainHandle until after the
+  // swap chain exists.
+  void (*swap_chain_ready_cb)(void* userdata);
+  void* swap_chain_ready_userdata;
+  // Initial swap chain dimensions in pixels. Used when set (non-zero) so the
+  // swap chain is created at the correct size from the start, avoiding an
+  // immediate ResizeBuffers on the first frame. When zero, ghostty falls back
+  // to GetClientRect on hwnd.
+  uint32_t initial_width;
+  uint32_t initial_height;
 } ghostty_platform_windows_s;
 
 typedef union {
