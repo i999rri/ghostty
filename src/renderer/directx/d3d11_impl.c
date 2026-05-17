@@ -17,6 +17,14 @@
 
 DEFINE_GUID(IID_IDCompositionDevice,  0xC37EA93A, 0xE7AA, 0x450D, 0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3);
 DEFINE_GUID(IID_IDXGIFactoryMedia_local, 0x41e7d1f2, 0xa591, 0x4f7b, 0xa2, 0xe5, 0xfa, 0x9c, 0x84, 0x3e, 0x1c, 0x12);
+// IDXGISwapChain3 has SetColorSpace1, needed for scRGB / wide-gamut output.
+// Not always present in older dxgi1_4.h shipped with Win10 SDK; declare the
+// minimal vtable + IID locally to avoid an SDK version dependency.
+DEFINE_GUID(IID_IDXGISwapChain3_local, 0x94d99bdb, 0xf1f8, 0x4ab0, 0xb2, 0x36, 0x7d, 0xa0, 0x17, 0x0e, 0xda, 0xb1);
+typedef enum DXGI_COLOR_SPACE_TYPE_local {
+    DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709_LOCAL = 0,
+    DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709_LOCAL = 1,
+} DXGI_COLOR_SPACE_TYPE_local;
 
 // Minimal IDCompositionVisual vtable (only SetContent + Release needed).
 // Each C++ overload occupies its own vtable slot.
@@ -119,6 +127,58 @@ struct DxDevice {
     volatile bool wait_for_presentation;
 };
 
+// Declare IDXGISwapChain3 → SetColorSpace1 inline so we don't depend on
+// dxgi1_4.h being present in the SDK. SetColorSpace1 sits at vtable slot
+// 38 (after IDXGISwapChain's 23 + IDXGISwapChain1's 6 + IDXGISwapChain2's 8
+// = 37 zero-indexed; slot 38 is the first SwapChain3 method, ColorSpace1
+// support being the first one we use). The intervening slots are stubbed
+// as void* so the struct layout matches what the runtime returns.
+typedef struct IDXGISwapChain3_local IDXGISwapChain3_local;
+typedef struct IDXGISwapChain3_localVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDXGISwapChain3_local*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(IDXGISwapChain3_local*);
+    ULONG   (STDMETHODCALLTYPE *Release)(IDXGISwapChain3_local*);
+    void* _slots_3_to_37[35];
+    UINT    (STDMETHODCALLTYPE *GetCurrentBackBufferIndex)(IDXGISwapChain3_local*);
+    HRESULT (STDMETHODCALLTYPE *CheckColorSpaceSupport)(IDXGISwapChain3_local*, DXGI_COLOR_SPACE_TYPE_local, UINT*);
+    HRESULT (STDMETHODCALLTYPE *SetColorSpace1)(IDXGISwapChain3_local*, DXGI_COLOR_SPACE_TYPE_local);
+} IDXGISwapChain3_localVtbl;
+struct IDXGISwapChain3_local { IDXGISwapChain3_localVtbl* lpVtbl; };
+
+// Tag the swap chain as scRGB (linear float, sRGB primaries) so DWM
+// color-manages output to whatever display gamut the user has — sRGB
+// monitors get clipping, wide-gamut monitors get gamut mapping, HDR
+// displays get tonemapping. Without this, raw 8-bit UNORM values land
+// on the display unmanaged and look over-saturated on wide-gamut
+// hardware (issue surfaced via GhosttyWin32: Asiimov palette orange
+// looked redder than Windows Terminal / Mac Ghostty).
+//
+// CheckColorSpaceSupport returns 0 on adapters that don't expose the
+// scRGB swap chain path (rare on Win10+). In that case we leave the
+// chain untagged — DWM falls back to its default sRGB assumption,
+// which is what we had before this change.
+static void dx_swap_chain_set_scrgb(IDXGISwapChain1* swap_chain1) {
+    IDXGISwapChain3_local* sc3 = NULL;
+    if (FAILED(IDXGISwapChain1_QueryInterface(swap_chain1, &IID_IDXGISwapChain3_local, (void**)&sc3)) || !sc3) {
+        OutputDebugStringA("D3D11: IDXGISwapChain3 not available; swap chain colorspace untagged\n");
+        return;
+    }
+    UINT support = 0;
+    HRESULT hr = sc3->lpVtbl->CheckColorSpaceSupport(sc3, DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709_LOCAL, &support);
+    // Bit 0 of `support` is DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.
+    if (SUCCEEDED(hr) && (support & 1u)) {
+        hr = sc3->lpVtbl->SetColorSpace1(sc3, DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709_LOCAL);
+        if (FAILED(hr)) {
+            char buf[128];
+            sprintf(buf, "D3D11: SetColorSpace1(scRGB) FAILED hr=0x%08X\n", (unsigned)hr);
+            OutputDebugStringA(buf);
+        }
+    } else {
+        OutputDebugStringA("D3D11: scRGB color space not supported by adapter; leaving untagged\n");
+    }
+    sc3->lpVtbl->Release(sc3);
+}
+
 static void dx_create_backbuffer_rtv(DxDevice* dev) {
     ID3D11Texture2D* back_buffer = NULL;
     IDXGISwapChain_GetBuffer(dev->swap_chain, 0, &IID_ID3D11Texture2D, (void**)&back_buffer);
@@ -170,7 +230,9 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     DXGI_SWAP_CHAIN_DESC1 scd = {0};
     scd.Width = width;
     scd.Height = height;
-    scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    // R16G16B16A16_FLOAT + scRGB color space tag (set below). See
+    // dx_swap_chain_set_scrgb for the rationale.
+    scd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     scd.SampleDesc.Count = 1;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = 2;
@@ -192,6 +254,8 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
         free(dev);
         return NULL;
     }
+
+    dx_swap_chain_set_scrgb(swap_chain1);
 
     // Set up DirectComposition: visual tree routes the swap chain to the HWND.
     // Visibility is controlled by attaching/detaching the visual root.
@@ -435,11 +499,16 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
         return NULL;
     }
 
-    // Build the swap chain matching WT AtlasEngine exactly.
+    // Build the swap chain matching WT AtlasEngine exactly, except for the
+    // pixel format: we use scRGB (R16G16B16A16_FLOAT + linear sRGB
+    // primaries, tagged via SetColorSpace1 below) so DWM color-manages
+    // output to the display gamut. WT keeps an 8-bit UNORM target and
+    // relies on its own gamma handling; we picked float to match the
+    // Metal renderer's wide-gamut composition path.
     DXGI_SWAP_CHAIN_DESC1 scd = {0};
     scd.Width = width;
     scd.Height = height;
-    scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    scd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     scd.SampleDesc.Count = 1;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = 3;
@@ -492,6 +561,8 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
         free(dev);
         return NULL;
     }
+
+    dx_swap_chain_set_scrgb(swap_chain1);
 
     // Get the waitable handle (matches WT) and explicitly set max latency to 1.
     {

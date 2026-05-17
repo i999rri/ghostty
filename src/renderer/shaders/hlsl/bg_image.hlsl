@@ -94,6 +94,8 @@ PSInput vs_main(VSInput input) {
 }
 
 float4 ps_main(PSInput input) : SV_Target {
+    bool use_linear_blending = (bools & USE_LINEAR_BLENDING) != 0;
+
     // Get texture dimensions
     uint tex_w, tex_h;
     image_tex.GetDimensions(tex_w, tex_h);
@@ -115,6 +117,19 @@ float4 ps_main(PSInput input) : SV_Target {
     float4 img = float4(0, 0, 0, 0);
     if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
         img = image_tex.Sample(image_sampler, uv);
+    }
+
+    // Both `bg` (unpacked sRGB byte) and `img` (sampled from a non-sRGB
+    // texture loaded as sRGB-encoded data) are in gamma-encoded sRGB
+    // space. When the swap chain expects linear output (linear blending
+    // or float scRGB), convert before blending so the lerp happens in
+    // perceptual space and the result lands at the correct intensity
+    // on a linear render target. Without this, raw sRGB values written
+    // to a linear swap chain show up much brighter (issue surfaced via
+    // GhosttyWin32: background image opacity looked washed-out).
+    if (use_linear_blending) {
+        bg = linearize4(float4(bg, 1.0)).rgb;
+        img.rgb = linearize4(img).rgb;
     }
 
     float3 blended = lerp(bg, img.rgb, img.a * op);
