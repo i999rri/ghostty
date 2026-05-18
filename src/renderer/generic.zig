@@ -737,7 +737,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .bools = .{
                         .cursor_wide = false,
                         .use_display_p3 = options.config.colorspace == .@"display-p3",
-                        .use_linear_blending = options.config.blending.isLinear(),
+                        .use_linear_blending = options.config.blending.isLinear() or
+                            (@hasDecl(GraphicsAPI, "force_linear_blending") and GraphicsAPI.force_linear_blending),
                         .use_linear_correction = options.config.blending == .@"linear-corrected",
                     },
                 },
@@ -1870,7 +1871,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Set our new color space and blending
             self.uniforms.bools.use_display_p3 = config.colorspace == .@"display-p3";
-            self.uniforms.bools.use_linear_blending = config.blending.isLinear();
+            self.uniforms.bools.use_linear_blending = config.blending.isLinear() or
+                (@hasDecl(GraphicsAPI, "force_linear_blending") and GraphicsAPI.force_linear_blending);
             self.uniforms.bools.use_linear_correction = config.blending == .@"linear-corrected";
 
             const bg_image_config_changed =

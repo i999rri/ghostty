@@ -28,6 +28,16 @@ pub const custom_shader_target: shadertoy.Target = .glsl;
 pub const custom_shader_y_is_down = true;
 pub const swap_chain_count = 2;
 
+/// DirectX targets a scRGB swap chain (R16G16B16A16_FLOAT + sRGB
+/// primaries, linear gamma) on the composition-surface path so DWM
+/// color-manages output to the display. That format expects the
+/// fragment shader to write linear values, so we force
+/// `use_linear_blending = true` regardless of the user's
+/// `alpha-blending` config. `native` (sRGB-space) blending would
+/// require an extra unlinearize at the end of every fragment shader —
+/// not implemented.
+pub const force_linear_blending = true;
+
 /// Called by the renderer when occlusion changes. Toggles the
 /// DirectComposition visual so the GPU can stop compositing hidden surfaces.
 /// Safe to call from the renderer thread.

@@ -111,8 +111,19 @@ float4 ps_main(PSInput input) : SV_Target {
         color *= a;
         return color;
     } else {
+        // Color glyph atlas (emoji, etc). Stored as premultiplied
+        // sRGB-encoded bytes in a non-sRGB texture, so the sample
+        // comes back in sRGB space. Convert to linear when the swap
+        // chain expects linear output (linear blending or float scRGB);
+        // otherwise leave as-is. Same washed-out-on-linear-target
+        // failure mode as bg_image.hlsl.
         float4 color = atlas_color.Sample(atlas_sampler, input.tex_coord / atlas_size_col);
-        if (use_linear_blending) return color;
+        if (use_linear_blending) {
+            color.rgb /= float3(color.a, color.a, color.a);
+            color = linearize4(color);
+            color.rgb *= float3(color.a, color.a, color.a);
+            return color;
+        }
         color.rgb /= float3(color.a, color.a, color.a);
         color = unlinearize4(color);
         color.rgb *= float3(color.a, color.a, color.a);

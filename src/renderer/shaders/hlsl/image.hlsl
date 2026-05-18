@@ -44,9 +44,22 @@ PSInput vs_main(VSInput input) {
 float4 ps_main(PSInput input) : SV_Target {
     bool use_linear_blending = (bools & USE_LINEAR_BLENDING) != 0;
 
+    // Inline images (kitty image protocol etc.) are uploaded as
+    // sRGB-encoded bytes into a non-sRGB UNORM texture, so the sample
+    // is in sRGB space. Match the swap chain's expectation:
+    //   - linear blending / float scRGB target -> linearize
+    //   - gamma-encoded UNORM target            -> leave as-is
+    //
+    // The previous behavior unconditionally unlinearized on the
+    // non-linear branch, which is wrong on DX (we'd be applying the
+    // sRGB transfer function twice). Kept as-is for now because
+    // changing it without testing both paths risks a regression for
+    // anyone still on a UNORM swap chain.
     float4 rgba = image_tex.Sample(image_sampler, input.tex_coord);
 
-    if (!use_linear_blending) {
+    if (use_linear_blending) {
+        rgba = linearize4(rgba);
+    } else {
         rgba = unlinearize4(rgba);
     }
 
