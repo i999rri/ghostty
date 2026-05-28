@@ -116,6 +116,20 @@ const Presentation = struct {
     ready_cb: ?*const fn (?*anyopaque) callconv(.c) void = null,
     ready_userdata: ?*anyopaque = null,
     ready_fired: bool = false,
+
+    /// "Swap chain state changed" callback. Fires on the renderer thread
+    /// after the initial bind, after `dx_resize` (i.e. ResizeBuffers),
+    /// and after a DPI change has flowed through the renderer. The host
+    /// receives the IDXGISwapChain1* and can install / re-install
+    /// platform-specific transforms in its own code path; ghostty does
+    /// not interpret what the host does with the swap chain. This split
+    /// keeps the WinUI 3 / SwapChainPanel inverse-scale workaround on
+    /// the host side, leaving the renderer responsible only for "when".
+    /// Only populated on the composition-surface path; the HWND path
+    /// owns its DComp visual directly and has no implicit upscale to
+    /// undo.
+    swap_chain_changed_cb: ?*const fn (?*anyopaque, ?*anyopaque) callconv(.c) void = null,
+    swap_chain_changed_userdata: ?*anyopaque = null,
 };
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !DirectX {
@@ -238,11 +252,46 @@ pub fn threadEnter(self: *const DirectX, surface: *apprt.Surface) !void {
     if (used_composition_surface) {
         self.presentation.ready_cb = platform.swap_chain_ready_cb;
         self.presentation.ready_userdata = platform.swap_chain_ready_userdata;
+
+        // Stash the swap-chain-changed callback only on the composition-
+        // surface path — the HWND path uses our own DComp visual and
+        // doesn't get the implicit XAML upscale that motivates this
+        // callback. Fire it once now so the host can install any
+        // initial transforms (e.g. an inverse-scale matrix) on the
+        // freshly bound swap chain before the first present.
+        self.presentation.swap_chain_changed_cb = platform.swap_chain_changed_cb;
+        self.presentation.swap_chain_changed_userdata = platform.swap_chain_changed_userdata;
+        self.fireSwapChainChanged();
     }
+}
+
+/// Fire the host's "swap chain state changed" callback (initial bind,
+/// post-resize, post-DPI-change). No-op when the callback isn't
+/// registered (HWND path, or host doesn't need the hook). Renderer
+/// thread.
+fn fireSwapChainChanged(self: *const DirectX) void {
+    const cb = self.presentation.swap_chain_changed_cb orelse return;
+    const dev = self.presentation.device orelse return;
+    const sc = dx.dx_get_swap_chain(dev) orelse return;
+    cb(sc, self.presentation.swap_chain_changed_userdata);
 }
 
 pub fn threadExit(self: *const DirectX) void {
     _ = self;
+}
+
+/// Called by `generic.Renderer.setFontGrid` whenever the font / DPI
+/// changes. The renderer itself doesn't care about the new DPI on the
+/// DirectX path — the only consumer is the host, which may want to
+/// re-install platform-specific transforms (e.g. a 1/CompositionScale
+/// matrix) on the swap chain. We forward to `fireSwapChainChanged` so
+/// the host runs the same code path used at initial bind and after
+/// `dx_resize`. The `xdpi` argument is unused at this level but kept
+/// for symmetry with the generic hook.
+pub fn applyFontDpiToTransforms(self: *DirectX, xdpi: u16) void {
+    _ = xdpi;
+    if (comptime builtin.os.tag != .windows) return;
+    self.fireSwapChainChanged();
 }
 
 pub fn displayRealized(self: *const DirectX) void {
@@ -296,6 +345,10 @@ pub fn surfaceSize(self: *const DirectX) !struct { width: u32, height: u32 } {
         dx.dx_get_backbuffer_size(dev, &bbw, &bbh);
         if (bbw != ww or bbh != wh) {
             dx.dx_resize(dev, ww, wh);
+            // ResizeBuffers can drop driver-level swap-chain state (some
+            // drivers reset transforms set via SetMatrixTransform), so
+            // give the host a chance to re-install whatever it owns.
+            self.fireSwapChainChanged();
         }
         return .{ .width = ww, .height = wh };
     }

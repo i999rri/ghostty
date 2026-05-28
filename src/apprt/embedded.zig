@@ -395,6 +395,18 @@ pub const Platform = union(PlatformTag) {
         /// premature — the back buffer is undefined until first present.)
         swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void = null,
         swap_chain_ready_userdata: ?*anyopaque = null,
+        /// Optional callback fired on ghostty's renderer thread after the
+        /// swap chain has been (re)bound or its effective DPI has
+        /// changed. The first argument is the IDXGISwapChain1* the
+        /// renderer is currently using; the host must NOT release it.
+        /// Use this to install platform-specific transforms — e.g. a
+        /// 1/CompositionScale matrix that cancels XAML SwapChainPanel's
+        /// implicit upscale on attached content. ghostty is intentionally
+        /// unaware of the host's policy; it just notifies. Fires once
+        /// at initial bind, then on every resize / DPI change so
+        /// transforms reset by ResizeBuffers can be re-installed.
+        swap_chain_changed_cb: ?*const fn (?*anyopaque, ?*anyopaque) callconv(.c) void = null,
+        swap_chain_changed_userdata: ?*anyopaque = null,
         /// Initial swap chain dimensions. When non-zero, used instead of
         /// querying the HWND's client rect — saves an immediate ResizeBuffers
         /// on the first frame when the host knows the actual panel size.
@@ -422,6 +434,8 @@ pub const Platform = union(PlatformTag) {
             composition_surface_handle: ?*anyopaque,
             swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void,
             swap_chain_ready_userdata: ?*anyopaque,
+            swap_chain_changed_cb: ?*const fn (?*anyopaque, ?*anyopaque) callconv(.c) void,
+            swap_chain_changed_userdata: ?*anyopaque,
             initial_width: u32,
             initial_height: u32,
         },
@@ -458,6 +472,8 @@ pub const Platform = union(PlatformTag) {
                     .composition_surface_handle = config.composition_surface_handle,
                     .swap_chain_ready_cb = config.swap_chain_ready_cb,
                     .swap_chain_ready_userdata = config.swap_chain_ready_userdata,
+                    .swap_chain_changed_cb = config.swap_chain_changed_cb,
+                    .swap_chain_changed_userdata = config.swap_chain_changed_userdata,
                     .initial_width = config.initial_width,
                     .initial_height = config.initial_height,
                 } };
