@@ -2086,6 +2086,19 @@ fn resolvePathForOpening(
     path: []const u8,
 ) Allocator.Error!?[]const u8 {
     if (!std.fs.path.isAbsolute(path)) {
+        // On Windows, ':' is only valid in a file path at offset 1 (the
+        // drive-letter separator). Anywhere else it indicates either a
+        // URL scheme separator (e.g. "https://..."), an NTFS alternate
+        // data stream, or a line/column suffix tacked on by the URL
+        // regex (e.g. "src/foo.zig:42:10"). Resolving any of those against
+        // pwd produces a path the NT layer rejects with
+        // STATUS_OBJECT_NAME_INVALID, which Zig's std.fs.accessAbsolute
+        // treats as `unreachable` and panics (issue
+        // i999rri/GhosttyWin32#12). Skip resolution in that case — the
+        // caller falls back to opening `path` as-is.
+        if (builtin.os.tag == .windows and
+            std.mem.indexOfScalar(u8, path, ':') != null) return null;
+
         const terminal_pwd = self.io.terminal.getPwd() orelse {
             return null;
         };

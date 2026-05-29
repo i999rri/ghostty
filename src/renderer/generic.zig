@@ -737,7 +737,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .bools = .{
                         .cursor_wide = false,
                         .use_display_p3 = options.config.colorspace == .@"display-p3",
-                        .use_linear_blending = options.config.blending.isLinear(),
+                        .use_linear_blending = options.config.blending.isLinear() or
+                            (@hasDecl(GraphicsAPI, "force_linear_blending") and GraphicsAPI.force_linear_blending),
                         .use_linear_correction = options.config.blending == .@"linear-corrected",
                     },
                 },
@@ -1062,6 +1063,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     display_link.stop() catch {};
                 }
             }
+
+            // Forward to the graphics API if it has a setVisible hook.
+            // (Used by DirectX to toggle DirectComposition visual visibility.)
+            if (comptime @hasDecl(GraphicsAPI, "setVisible")) {
+                self.api.setVisible(visible);
+            }
         }
 
         /// Set the new font grid.
@@ -1102,6 +1109,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Update relevant uniforms
             self.updateFontGridUniforms();
+
+            // Backends that need DPI-dependent notifications (currently
+            // just DirectX, which forwards to a host callback so the
+            // host can re-install platform-specific transforms on its
+            // swap chain) get notified here. Backends without a
+            // matching method simply don't declare it and the branch
+            // compiles away.
+            if (comptime @hasDecl(API, "applyFontDpiToTransforms")) {
+                if (grid.resolver.collection.load_options) |opts| {
+                    self.api.applyFontDpiToTransforms(opts.size.xdpi);
+                }
+            }
 
             // Force a full rebuild, because cached rows may still reference
             // an outdated atlas from the old grid and this can cause garbage
@@ -1826,7 +1845,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         fn uploadBackgroundImage(self: *Self) !void {
-            // Make sure our bg image is uploaded if it needs to be.
             if (self.bg_image) |*bg| {
                 if (bg.isUnloading()) {
                     bg.deinit(self.alloc);
@@ -1865,7 +1883,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Set our new color space and blending
             self.uniforms.bools.use_display_p3 = config.colorspace == .@"display-p3";
-            self.uniforms.bools.use_linear_blending = config.blending.isLinear();
+            self.uniforms.bools.use_linear_blending = config.blending.isLinear() or
+                (@hasDecl(GraphicsAPI, "force_linear_blending") and GraphicsAPI.force_linear_blending);
             self.uniforms.bools.use_linear_correction = config.blending == .@"linear-corrected";
 
             const bg_image_config_changed =

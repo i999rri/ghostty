@@ -390,7 +390,7 @@ fn collection(
 }
 
 /// Decrement the ref count for the given key. If the ref count is zero,
-/// the grid will be deinitialized and removed from the map.j:w
+/// the grid will be deinitialized and removed from the map.
 pub fn deref(self: *SharedGridSet, key: Key) void {
     self.lock.lock();
     defer self.lock.unlock();
