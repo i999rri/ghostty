@@ -481,6 +481,22 @@ typedef struct {
   // swap chain exists.
   void (*swap_chain_ready_cb)(void* userdata);
   void* swap_chain_ready_userdata;
+  // Optional callback fired on ghostty's renderer thread after the swap
+  // chain has been resized (i.e. ResizeBuffers completed) or after a
+  // DPI / content scale change has been applied to the renderer. The
+  // first argument is the IDXGISwapChain1* the renderer is using; the
+  // host MUST NOT release this reference (ghostty retains ownership).
+  // The host can `QueryInterface` it to IDXGISwapChain2 and install
+  // platform-specific transforms (for example, a 1/CompositionScale
+  // matrix to cancel XAML SwapChainPanel's automatic upscale of
+  // attached content). The callback fires once after the swap chain is
+  // first bound (so the host can install initial state), and again on
+  // every subsequent resize / DPI change so transforms that some
+  // drivers reset on ResizeBuffers can be re-installed. ghostty has no
+  // knowledge of what the host installs; the policy lives entirely in
+  // the callback. Set to null to opt out.
+  void (*swap_chain_changed_cb)(void* swap_chain, void* userdata);
+  void* swap_chain_changed_userdata;
   // Initial swap chain dimensions in pixels. Used when set (non-zero) so the
   // swap chain is created at the correct size from the start, avoiding an
   // immediate ResizeBuffers on the first frame. When zero, ghostty falls back

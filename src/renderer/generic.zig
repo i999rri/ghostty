@@ -1110,6 +1110,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // Update relevant uniforms
             self.updateFontGridUniforms();
 
+            // Backends that need DPI-dependent notifications (currently
+            // just DirectX, which forwards to a host callback so the
+            // host can re-install platform-specific transforms on its
+            // swap chain) get notified here. Backends without a
+            // matching method simply don't declare it and the branch
+            // compiles away.
+            if (comptime @hasDecl(API, "applyFontDpiToTransforms")) {
+                if (grid.resolver.collection.load_options) |opts| {
+                    self.api.applyFontDpiToTransforms(opts.size.xdpi);
+                }
+            }
+
             // Force a full rebuild, because cached rows may still reference
             // an outdated atlas from the old grid and this can cause garbage
             // to be rendered.
