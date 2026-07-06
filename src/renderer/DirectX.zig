@@ -130,6 +130,15 @@ const Presentation = struct {
     /// undo.
     swap_chain_changed_cb: ?*const fn (?*anyopaque, ?*anyopaque) callconv(.c) void = null,
     swap_chain_changed_userdata: ?*anyopaque = null,
+
+    /// Set by `present` (via Frame.complete) when a full frame was
+    /// drawn this drawFrame cycle; consumed by `drawFrameEnd` to decide
+    /// whether to actually Present. drawFrameStart clears the backbuffer
+    /// to opaque black before we know if there's anything to draw, so
+    /// presenting unconditionally flashes black on every path that
+    /// skips drawing (no-redraw, zero surface size, synchronized
+    /// output). Renderer-thread only.
+    frame_drawn: bool = false,
 };
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !DirectX {
@@ -315,6 +324,16 @@ pub fn drawFrameStart(self: *DirectX) void {
 
 pub fn drawFrameEnd(self: *DirectX) void {
     const dev = self.presentation.device orelse return;
+
+    // Only present when a frame was actually completed this cycle
+    // (Frame.complete -> present sets the flag). On the skip paths the
+    // backbuffer holds only drawFrameStart's opaque-black clear;
+    // presenting it would flash. Flip-model DWM keeps showing the last
+    // presented frame, so skipping is correct (presentLastTarget is a
+    // no-op by design).
+    if (!self.presentation.frame_drawn) return;
+    self.presentation.frame_drawn = false;
+
     // VSync to match SwapChainPanel/DComp composition cadence.
     // With FRAME_LATENCY_WAITABLE_OBJECT, vsync prevents tearing/flicker.
     dx.dx_present(dev, true);
@@ -387,6 +406,7 @@ pub fn beginFrame(self: *DirectX, renderer: *Renderer, target: *Target) !Frame {
 
 pub fn present(self: *DirectX, target: Target) !void {
     self.last_target = target;
+    self.presentation.frame_drawn = true;
 }
 
 pub fn presentLastTarget(self: *DirectX) !void {
