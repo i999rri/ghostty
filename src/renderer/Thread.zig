@@ -19,6 +19,11 @@ const log = std.log.scoped(.renderer_thread);
 const DRAW_INTERVAL = 8; // 120 FPS
 const CURSOR_BLINK_INTERVAL = 600;
 
+/// Native render loop safety net (ms): force a full update+draw this
+/// often even with no wakeup/mailbox activity, so a dropped notify
+/// degrades to a briefly-stale frame instead of a permanently-stale one.
+const NATIVE_FORCED_REDRAW_INTERVAL = 1000;
+
 /// Whether to use a native render loop instead of xev's event loop.
 /// DirectX on Windows requires this because xev's IOCP is incompatible with D3D11.
 const use_native_loop = blk: {
@@ -119,6 +124,14 @@ flags: packed struct {
 
     /// Set by drainMailbox on reset_cursor_blink; consumed by native render loop
     cursor_blink_reset: bool = false,
+
+    /// Native render loop only. Set by wakeupCallback / drawNowCallback
+    /// when their asyncs fire through the loop.run(.no_wait) poll;
+    /// consumed by nativeRenderCycle. Both are written and read on the
+    /// renderer thread only (xev dispatch happens inside the poll), so
+    /// no atomics are needed.
+    render_requested: bool = false,
+    draw_now_requested: bool = false,
 } = .{},
 
 /// Stop flag for native render loop. Only exists when use_native_loop is true.
@@ -286,6 +299,20 @@ fn threadMain_(self: *Thread) !void {
         self.stop_requested.store(false, .monotonic);
         self.stop.wait(&self.loop, &self.stop_c, Thread, self, nativeStopCallback);
 
+        // Register the wakeup / draw-now asyncs on the same polled loop.
+        // Without these, every renderer_wakeup.notify() from termio /
+        // Surface (PTY output, resize, IME preedit, refresh) is silently
+        // dropped and the only thing that ever produces frames is the
+        // unconditional poll below — which forces redrawing every cycle
+        // "just in case". Delivery uses the identical mechanism as the
+        // stop async above, which is proven to fire through
+        // loop.run(.no_wait).
+        self.wakeup.wait(&self.loop, &self.wakeup_c, Thread, self, wakeupCallback);
+        self.draw_now.wait(&self.loop, &self.draw_now_c, Thread, self, drawNowCallback);
+
+        // Prime the first frame (mirrors the xev branch).
+        self.flags.render_requested = true;
+
         const win = @import("../os/windows.zig");
         const k32 = win.exp.kernel32;
         const GetTickCount64 = k32.GetTickCount64;
@@ -315,14 +342,16 @@ fn threadMain_(self: *Thread) !void {
         };
 
         var last_blink: u64 = GetTickCount64();
+        var last_forced: u64 = GetTickCount64();
 
         while (!self.stop_requested.load(.monotonic)) {
-            // Poll xev for stop signal (non-blocking)
+            // Poll xev (non-blocking): stop / wakeup / draw-now asyncs
+            // are all delivered here.
             _ = self.loop.run(.no_wait) catch |err|
                 log.err("error in xev poll err={}", .{err});
 
             const now = GetTickCount64();
-            self.nativeRenderCycle(&last_blink, now);
+            self.nativeRenderCycle(&last_blink, &last_forced, now);
 
             // Adaptive sleep: 4ms (~240fps) when focused, 16ms (~60fps) when not
             const sleep_ms: u32 = if (self.flags.focused) 4 else 16;
@@ -414,8 +443,11 @@ fn syncDrawTimer(self: *Thread) void {
     );
 }
 
-/// Drain the mailbox.
-fn drainMailbox(self: *Thread) !void {
+/// Drain the mailbox. Returns true when at least one message was
+/// processed — the native render loop uses this as a "state may have
+/// changed, redraw" signal, which also covers producers whose wakeup
+/// notify was dropped but whose mailbox push succeeded.
+fn drainMailbox(self: *Thread) !bool {
     // There's probably a more elegant way to do this...
     //
     // This is effectively an @autoreleasepool{} block, which we need in
@@ -426,7 +458,9 @@ fn drainMailbox(self: *Thread) !void {
         void;
     defer if (builtin.os.tag.isDarwin()) pool.deinit();
 
+    var drained = false;
     while (self.mailbox.pop()) |message| {
+        drained = true;
         log.debug("mailbox message={}", .{message});
         switch (message) {
             .crash => @panic("crash request, crashing intentionally"),
@@ -575,6 +609,8 @@ fn drainMailbox(self: *Thread) !void {
             },
         }
     }
+
+    return drained;
 }
 
 fn changeConfig(self: *Thread, config: *const DerivedConfig) !void {
@@ -603,28 +639,90 @@ fn drawFrame(self: *Thread, now: bool) void {
 }
 
 /// Perform one render cycle for the native render loop.
-/// Drains mailbox, updates frame, toggles cursor blink, and draws.
-fn nativeRenderCycle(self: *Thread, last_blink: *u64, now: u64) void {
-    self.drainMailbox() catch |err|
+///
+/// Hybrid cadence:
+///
+///   * Focused surface: render every cycle, exactly like the loop
+///     always did. On a high-refresh monitor (240 Hz = 4.2 ms/frame)
+///     the 4 ms poll IS the frame pacing — producing frames only on
+///     wakeup events makes motion visibly choppier and adds a poll
+///     interval of input latency, and the focused surface is the one
+///     the user is typing into. Only one surface is focused at a time
+///     (the host forwards focus via ghostty_surface_set_focus), so
+///     the continuous cost is bounded to a single window.
+///
+///   * Unfocused surfaces: event-driven — a frame is only produced
+///     when something asked for one (wakeup async, mailbox activity,
+///     or the periodic safety net). Background windows still update
+///     live on PTY output but stop presenting when idle, instead of
+///     burning 60+ fps on content nobody is interacting with.
+fn nativeRenderCycle(
+    self: *Thread,
+    last_blink: *u64,
+    last_forced: *u64,
+    now: u64,
+) void {
+    const had_messages = self.drainMailbox() catch |err| blk: {
         log.err("error draining mailbox err={}", .{err});
+        break :blk false;
+    };
 
     if (self.flags.cursor_blink_reset) {
         self.flags.cursor_blink_reset = false;
         last_blink.* = now;
     }
 
-    self.renderer.updateFrame(
-        self.state,
-        self.flags.cursor_blink_visible,
-    ) catch |err|
-        log.warn("error rendering err={}", .{err});
-
-    if (now - last_blink.* >= cursorBlinkInterval()) {
+    // Toggle the blinking cursor while focused. Mirrors the xev branch,
+    // which cancels the cursor timer on focus loss; the .focus mailbox
+    // handler already resets cursor_blink_visible on both transitions.
+    var blink_toggled = false;
+    if (self.flags.focused and now - last_blink.* >= cursorBlinkInterval()) {
         self.flags.cursor_blink_visible = !self.flags.cursor_blink_visible;
         last_blink.* = now;
+        blink_toggled = true;
     }
 
-    self.drawFrame(false);
+    // Safety net: periodically force a full update+draw in case a
+    // producer's wakeup notify was dropped (mailbox pushes and notifies
+    // can fail independently), so a lost notify degrades to a briefly
+    // stale frame instead of a permanently stale one.
+    const forced = now - last_forced.* >= NATIVE_FORCED_REDRAW_INTERVAL;
+
+    // Focused surface renders unconditionally — see the doc comment.
+    const continuous = self.flags.focused;
+
+    if (continuous or self.flags.render_requested or had_messages or blink_toggled or forced) {
+        self.flags.render_requested = false;
+        last_forced.* = now;
+        self.renderer.updateFrame(
+            self.state,
+            self.flags.cursor_blink_visible,
+        ) catch |err|
+            log.warn("error rendering err={}", .{err});
+        self.drawFrame(false);
+        return;
+    }
+
+    // Custom-shader animations need continuous draws without a state
+    // update — the native-loop equivalent of the xev draw timer, which
+    // is never armed on this path.
+    if (self.flags.draw_now_requested or self.animationsActive()) {
+        const force = self.flags.draw_now_requested;
+        self.flags.draw_now_requested = false;
+        self.drawFrame(force);
+    }
+}
+
+/// Whether custom-shader animation wants continuous draws right now.
+/// Same policy as syncDrawTimer, which drives the xev draw timer.
+fn animationsActive(self: *Thread) bool {
+    if (comptime !@hasDecl(rendererpkg.Renderer, "hasAnimations")) return false;
+    if (!self.renderer.hasAnimations()) return false;
+    return switch (self.config.custom_shader_animation) {
+        .always => true,
+        .true => self.flags.focused,
+        .false => false,
+    };
 }
 
 fn wakeupCallback(
@@ -640,9 +738,18 @@ fn wakeupCallback(
 
     const t = self_.?;
 
+    // Native loop: defer all render work to nativeRenderCycle so no
+    // D3D calls happen inside xev callback dispatch (this backend's
+    // IOCP loop has a history of stalling around D3D11 work). The
+    // cycle picks the flag up within one poll interval.
+    if (comptime use_native_loop) {
+        t.flags.render_requested = true;
+        return .rearm;
+    }
+
     // When we wake up, we check the mailbox. Mailbox producers should
     // wake up our thread after publishing.
-    t.drainMailbox() catch |err|
+    _ = t.drainMailbox() catch |err|
         log.err("error draining mailbox err={}", .{err});
 
     // Render immediately
@@ -681,6 +788,14 @@ fn drawNowCallback(
 
     // Draw immediately
     const t = self_.?;
+
+    // Native loop: same deferral as wakeupCallback — keep D3D work
+    // out of xev dispatch.
+    if (comptime use_native_loop) {
+        t.flags.draw_now_requested = true;
+        return .rearm;
+    }
+
     t.drawFrame(true);
 
     return .rearm;
