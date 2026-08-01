@@ -345,6 +345,7 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
+    windows: Windows,
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -358,6 +359,62 @@ pub const Platform = union(PlatformTag) {
         uiview: objc.Object,
     } else void;
 
+    pub const Windows = if (builtin.target.os.tag == .windows) struct {
+        /// The window handle to render the surface on.
+        hwnd: std.os.windows.HWND,
+        /// The device context for OpenGL rendering.
+        hdc: ?*anyopaque,
+        /// The OpenGL rendering context.
+        hglrc: ?*anyopaque,
+        /// External D3D11 device (ID3D11Device*) for SwapChainPanel mode.
+        /// When set, ghostty uses this device instead of creating its own.
+        d3d_device: ?*anyopaque = null,
+        /// External swap chain (IDXGISwapChain1*) for SwapChainPanel mode.
+        /// When set, ghostty renders into this swap chain.
+        swap_chain: ?*anyopaque = null,
+        /// DComposition surface handle for SwapChainPanel integration.
+        /// When set, ghostty creates its own device + swap chain on its
+        /// renderer thread, bound to this surface.
+        ///
+        /// If `swap_chain_ready_cb` is null, the caller must already have
+        /// bound the handle to the panel via `SetSwapChainHandle` before
+        /// calling `ghostty_surface_new`. If the callback is set, the
+        /// caller should dispatch to the UI thread from the callback and
+        /// call `SetSwapChainHandle` then — see `swap_chain_ready_cb` for
+        /// the exact firing semantics.
+        composition_surface_handle: ?*anyopaque = null,
+        /// Fires on the renderer thread exactly once per surface, after
+        /// the renderer has presented its first frame to
+        /// `composition_surface_handle` (or from surface teardown if no
+        /// frame was ever presented — gives the host a chance to free
+        /// its userdata regardless).
+        ///
+        /// The "first present" semantic means the swap chain is guaranteed
+        /// to have displayable content when this fires, so the host can
+        /// safely make its SwapChainPanel visible without the user seeing
+        /// an empty panel briefly. (Firing at swap-chain-creation would be
+        /// premature — the back buffer is undefined until first present.)
+        swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void = null,
+        swap_chain_ready_userdata: ?*anyopaque = null,
+        /// Optional callback fired on ghostty's renderer thread after the
+        /// swap chain has been (re)bound or its effective DPI has
+        /// changed. The first argument is the IDXGISwapChain1* the
+        /// renderer is currently using; the host must NOT release it.
+        /// Use this to install platform-specific transforms — e.g. a
+        /// 1/CompositionScale matrix that cancels XAML SwapChainPanel's
+        /// implicit upscale on attached content. ghostty is intentionally
+        /// unaware of the host's policy; it just notifies. Fires once
+        /// at initial bind, then on every resize / DPI change so
+        /// transforms reset by ResizeBuffers can be re-installed.
+        swap_chain_changed_cb: ?*const fn (?*anyopaque, ?*anyopaque) callconv(.c) void = null,
+        swap_chain_changed_userdata: ?*anyopaque = null,
+        /// Initial swap chain dimensions. When non-zero, used instead of
+        /// querying the HWND's client rect — saves an immediate ResizeBuffers
+        /// on the first frame when the host knows the actual panel size.
+        initial_width: u32 = 0,
+        initial_height: u32 = 0,
+    } else void;
+
     // The C ABI compatible version of this union. The tag is expected
     // to be stored elsewhere.
     pub const C = extern union {
@@ -367,6 +424,21 @@ pub const Platform = union(PlatformTag) {
 
         ios: extern struct {
             uiview: ?*anyopaque,
+        },
+
+        windows: extern struct {
+            hwnd: ?*anyopaque,
+            hdc: ?*anyopaque,
+            hglrc: ?*anyopaque,
+            d3d_device: ?*anyopaque,
+            swap_chain: ?*anyopaque,
+            composition_surface_handle: ?*anyopaque,
+            swap_chain_ready_cb: ?*const fn (?*anyopaque) callconv(.c) void,
+            swap_chain_ready_userdata: ?*anyopaque,
+            swap_chain_changed_cb: ?*const fn (?*anyopaque, ?*anyopaque) callconv(.c) void,
+            swap_chain_changed_userdata: ?*anyopaque,
+            initial_width: u32,
+            initial_height: u32,
         },
     };
 
@@ -387,6 +459,26 @@ pub const Platform = union(PlatformTag) {
                     break :ios error.UIViewMustBeSet);
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
+
+            .windows => if (Windows != void) windows: {
+                const config = c_platform.windows;
+                const hwnd: std.os.windows.HWND = @ptrCast(config.hwnd orelse
+                    break :windows error.HWNDMustBeSet);
+                break :windows .{ .windows = .{
+                    .hwnd = hwnd,
+                    .hdc = config.hdc,
+                    .hglrc = config.hglrc,
+                    .d3d_device = config.d3d_device,
+                    .swap_chain = config.swap_chain,
+                    .composition_surface_handle = config.composition_surface_handle,
+                    .swap_chain_ready_cb = config.swap_chain_ready_cb,
+                    .swap_chain_ready_userdata = config.swap_chain_ready_userdata,
+                    .swap_chain_changed_cb = config.swap_chain_changed_cb,
+                    .swap_chain_changed_userdata = config.swap_chain_changed_userdata,
+                    .initial_width = config.initial_width,
+                    .initial_height = config.initial_height,
+                } };
+            } else error.UnsupportedPlatform,
         };
     }
 };
@@ -397,6 +489,7 @@ pub const PlatformTag = enum(c_int) {
 
     macos = 1,
     ios = 2,
+    windows = 3,
 };
 
 pub const EnvVar = extern struct {
@@ -804,6 +897,15 @@ pub const Surface = struct {
             .width = width,
             .height = height,
         };
+
+        // Notify the graphics API synchronously from this (main) thread.
+        // DirectX uses this so the renderer thread picks up the new
+        // window size on the very next frame, without the asynchronous
+        // round trip through the renderer thread mailbox.
+        const Api = @TypeOf(self.core_surface.renderer.api);
+        if (comptime @hasDecl(Api, "notifyResize")) {
+            self.core_surface.renderer.api.notifyResize(width, height);
+        }
 
         // Call the primary callback.
         self.core_surface.sizeCallback(self.size) catch |err| {
@@ -1564,6 +1666,16 @@ pub const CAPI = struct {
     /// Returns the userdata associated with the surface.
     export fn ghostty_surface_userdata(surface: *Surface) ?*anyopaque {
         return surface.userdata;
+    }
+
+    /// Returns the DirectX swap chain (IDXGISwapChain1*) for SwapChainPanel integration.
+    /// Returns null on non-DirectX backends or if the device is not yet created.
+    export fn ghostty_surface_swap_chain(surface: *Surface) ?*anyopaque {
+        const Api = @TypeOf(surface.core_surface.renderer.api);
+        if (comptime @hasDecl(Api, "getSwapChain")) {
+            return surface.core_surface.renderer.api.getSwapChain();
+        }
+        return null;
     }
 
     /// Returns the app associated with a surface.

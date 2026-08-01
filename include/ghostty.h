@@ -66,6 +66,7 @@ typedef enum {
   GHOSTTY_PLATFORM_INVALID,
   GHOSTTY_PLATFORM_MACOS,
   GHOSTTY_PLATFORM_IOS,
+  GHOSTTY_PLATFORM_WINDOWS,
 } ghostty_platform_e;
 
 typedef enum {
@@ -453,9 +454,60 @@ typedef struct {
   void* uiview;
 } ghostty_platform_ios_s;
 
+typedef struct {
+  void* hwnd;
+  void* hdc;
+  void* hglrc;
+  void* d3d_device;
+  void* swap_chain;
+  // DirectComposition surface handle (HANDLE) for SwapChainPanel integration.
+  // When set, ghostty creates its own device + swap chain on its renderer
+  // thread, bound to this surface.
+  //
+  // If swap_chain_ready_cb is null, the caller must already have called
+  // ISwapChainPanelNative2::SetSwapChainHandle(handle) on the UI thread
+  // BEFORE invoking ghostty_surface_new. If the callback is set, ghostty
+  // fires it from the renderer thread immediately after the swap chain
+  // is created and bound to this handle — the caller should dispatch
+  // back to its UI thread and call SetSwapChainHandle there. The
+  // callback path matches Microsoft's documented order and the Windows
+  // Terminal AtlasEngine pattern.
+  void* composition_surface_handle;
+  // Optional callback fired on ghostty's renderer thread immediately
+  // after the swap chain is created and bound to
+  // composition_surface_handle. The userdata pointer is passed through
+  // unchanged. Use this to defer SetSwapChainHandle until after the
+  // swap chain exists.
+  void (*swap_chain_ready_cb)(void* userdata);
+  void* swap_chain_ready_userdata;
+  // Optional callback fired on ghostty's renderer thread after the swap
+  // chain has been resized (i.e. ResizeBuffers completed) or after a
+  // DPI / content scale change has been applied to the renderer. The
+  // first argument is the IDXGISwapChain1* the renderer is using; the
+  // host MUST NOT release this reference (ghostty retains ownership).
+  // The host can `QueryInterface` it to IDXGISwapChain2 and install
+  // platform-specific transforms (for example, a 1/CompositionScale
+  // matrix to cancel XAML SwapChainPanel's automatic upscale of
+  // attached content). The callback fires once after the swap chain is
+  // first bound (so the host can install initial state), and again on
+  // every subsequent resize / DPI change so transforms that some
+  // drivers reset on ResizeBuffers can be re-installed. ghostty has no
+  // knowledge of what the host installs; the policy lives entirely in
+  // the callback. Set to null to opt out.
+  void (*swap_chain_changed_cb)(void* swap_chain, void* userdata);
+  void* swap_chain_changed_userdata;
+  // Initial swap chain dimensions in pixels. Used when set (non-zero) so the
+  // swap chain is created at the correct size from the start, avoiding an
+  // immediate ResizeBuffers on the first frame. When zero, ghostty falls back
+  // to GetClientRect on hwnd.
+  uint32_t initial_width;
+  uint32_t initial_height;
+} ghostty_platform_windows_s;
+
 typedef union {
   ghostty_platform_macos_s macos;
   ghostty_platform_ios_s ios;
+  ghostty_platform_windows_s windows;
 } ghostty_platform_u;
 
 typedef enum {
