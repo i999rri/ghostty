@@ -118,6 +118,21 @@ float4 ps_main(PSInput input) : SV_Target {
         // otherwise leave as-is. Same washed-out-on-linear-target
         // failure mode as bg_image.hlsl.
         float4 color = atlas_color.Sample(atlas_sampler, input.tex_coord / atlas_size_col);
+        // Guard the un-premultiply divide against fully-transparent
+        // atlas pixels (edges of every color glyph — the rectangle
+        // outside the visible emoji shape is stored as (0,0,0,0)).
+        // color.rgb / color.a with color.a == 0 produces INF, and the
+        // subsequent linearize / re-premultiply of INF collapses to
+        // NaN. NaN then propagates through the premultiplied blend
+        // (dst * (1 - NaN) → NaN), and D3D11's fixed-function blender
+        // renders NaN as opaque black — visible as a black rectangle
+        // hugging every color-atlas glyph. Short-circuit the whole
+        // path when the sampled pixel is transparent; blending
+        // (0,0,0,0) leaves the underlying cell background untouched,
+        // which is what these pixels are supposed to do.
+        if (color.a == 0.0f) {
+            return float4(0.0f, 0.0f, 0.0f, 0.0f);
+        }
         if (use_linear_blending) {
             color.rgb /= float3(color.a, color.a, color.a);
             color = linearize4(color);
