@@ -238,7 +238,12 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     scd.BufferCount = 2;
     scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     scd.Scaling = DXGI_SCALING_STRETCH;
-    scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    // PREMULTIPLIED so DComp honours the alpha the shaders already
+    // produce (load_color premultiplies; the frame clears to
+    // transparent black; blending is ONE / INV_SRC_ALPHA). With
+    // IGNORE, background-opacity was computed all the way through
+    // the pipeline and then discarded at composition.
+    scd.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
 
     IDXGISwapChain1* swap_chain1 = NULL;
     hr = IDXGIFactory2_CreateSwapChainForComposition(factory, (IUnknown*)dev->device, &scd, NULL, &swap_chain1);
@@ -514,7 +519,12 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
     scd.BufferCount = 3;
     scd.Scaling = DXGI_SCALING_STRETCH;  // SwapChainPanel requires STRETCH
     scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-    scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    // PREMULTIPLIED so DComp honours the alpha the shaders already
+    // produce (load_color premultiplies; the frame clears to
+    // transparent black; blending is ONE / INV_SRC_ALPHA). With
+    // IGNORE, background-opacity was computed all the way through
+    // the pipeline and then discarded at composition.
+    scd.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
     scd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     // CreateSwapChainForCompositionSurfaceHandle lives on IDXGIFactoryMedia.
