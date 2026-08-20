@@ -151,6 +151,17 @@ pub const Shaders = struct {
                     .vertex_fn = "vs_main",
                     .fragment_fn = "ps_main",
                     .step_fn = .per_instance,
+                    // The bg_image shader composites the background
+                    // color into its own output (lerp(bg, img, ...)
+                    // scaled by bg alpha) — it is a full replacement
+                    // for the bg_color pass, not a layer over it.
+                    // Blending it accumulates alpha (0.4 -> 0.64 at
+                    // background-opacity 0.4) and double-counts the
+                    // background color, which surfaced as "the pane
+                    // stops being translucent when a background
+                    // image is set" once the swap chain honored
+                    // alpha.
+                    .blending_enabled = false,
                 }),
             },
             .post_pipelines = &.{},
