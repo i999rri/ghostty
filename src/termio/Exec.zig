@@ -1212,6 +1212,9 @@ const Subprocess = struct {
         log.info("started WSL bridge session pid={?}", .{cmd.pid});
         self.process = .{ .fork_exec = cmd };
 
+        // Tie wsl.exe's lifetime to ours so a crash can't orphan it.
+        if (cmd.pid) |pid| bridge.superviseProcess(pid);
+
         bridge.closeChildSide();
         try bridge.startPump();
 
