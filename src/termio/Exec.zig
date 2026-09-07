@@ -23,6 +23,7 @@ const termio = @import("../termio.zig");
 const Command = @import("../Command.zig");
 const SegmentedPool = @import("../datastruct/main.zig").SegmentedPool;
 const ptypkg = @import("../pty.zig");
+const wslbridge = @import("../wsl_bridge.zig");
 const Pty = ptypkg.Pty;
 const EnvMap = std.process.EnvMap;
 const PasswdEntry = internal_os.passwd.Entry;
@@ -573,6 +574,9 @@ pub const Config = struct {
     working_directory: ?[]const u8 = null,
     resources_dir: ?[]const u8,
     term: []const u8,
+    wsl_bridge: bool = false,
+    wsl_bridge_distribution: ?[]const u8 = null,
+    wsl_bridge_command: ?[]const u8 = null,
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -594,6 +598,11 @@ const Subprocess = struct {
     pty: ?Pty = null,
     process: ?Process = null,
 
+    /// Set when the surface opted into the WSL pty bridge; start()
+    /// then goes through startWslBridge instead of ConPTY.
+    wsl_bridge_cfg: ?WslBridgeConfig = null,
+    bridge: ?wslbridge.WslBridgePty = null,
+
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
 
@@ -604,6 +613,17 @@ const Subprocess = struct {
 
         /// Flatpak DBus command
         flatpak: FlatpakHostCommand,
+    };
+
+    const WslBridgeConfig = struct {
+        distribution: ?[:0]const u8,
+        command: ?[:0]const u8,
+        term: [:0]const u8,
+    };
+
+    const PtyFds = struct {
+        read: Pty.Fd,
+        write: Pty.Fd,
     };
 
     const ArgsFormatter = struct {
@@ -867,6 +887,11 @@ const Subprocess = struct {
             .env = env,
             .cwd = cwd,
             .args = args,
+            .wsl_bridge_cfg = if (builtin.os.tag == .windows and cfg.wsl_bridge) .{
+                .distribution = if (cfg.wsl_bridge_distribution) |v| try alloc.dupeZ(u8, v) else null,
+                .command = if (cfg.wsl_bridge_command) |v| try alloc.dupeZ(u8, v) else null,
+                .term = try alloc.dupeZ(u8, cfg.term),
+            } else null,
 
             .rt_pre_exec_info = cfg.rt_pre_exec_info,
             .rt_post_fork_info = cfg.rt_post_fork_info,
@@ -881,6 +906,12 @@ const Subprocess = struct {
     pub fn deinit(self: *Subprocess) void {
         self.stop();
         if (self.pty) |*pty| pty.deinit();
+        if (comptime builtin.os.tag == .windows) {
+            if (self.bridge) |*bridge| {
+                bridge.deinit();
+                self.bridge = null;
+            }
+        }
         if (self.env) |*env| env.deinit();
         self.arena.deinit();
         self.* = undefined;
@@ -888,11 +919,14 @@ const Subprocess = struct {
 
     /// Start the subprocess. If the subprocess is already started this
     /// will crash.
-    pub fn start(self: *Subprocess, alloc: Allocator) !struct {
-        read: Pty.Fd,
-        write: Pty.Fd,
-    } {
+    pub fn start(self: *Subprocess, alloc: Allocator) !PtyFds {
         assert(self.pty == null and self.process == null);
+
+        // A WSL bridge session has no ConPTY at all: the pty lives
+        // inside the distro and wsl.exe is both pipe and process.
+        if (comptime builtin.os.tag == .windows) {
+            if (self.wsl_bridge_cfg) |bcfg| return try self.startWslBridge(alloc, bcfg);
+        }
 
         // This function is funny because on POSIX systems it can
         // fail in the forked process. This is flipped to true if
@@ -1075,6 +1109,123 @@ const Subprocess = struct {
         };
     }
 
+    /// Start a session through the WSL pty bridge instead of ConPTY
+    /// (GhosttyWin32#206). wsl.exe runs ghostty-wsl-helper, which owns
+    /// a real Linux pty; see src/wsl_bridge.zig for the pipe layout.
+    fn startWslBridge(
+        self: *Subprocess,
+        alloc: Allocator,
+        bcfg: WslBridgeConfig,
+    ) !PtyFds {
+        const arena = self.arena.allocator();
+
+        // The helper ships next to the host executable; the env var
+        // override serves development builds running from elsewhere.
+        const helper_path: []u8 = helper: {
+            if (std.process.getEnvVarOwned(arena, "GHOSTTY_WSL_HELPER")) |v| {
+                break :helper v;
+            } else |_| {}
+            const exe_dir = try std.fs.selfExeDirPathAlloc(arena);
+            break :helper try std.fs.path.join(arena, &.{ exe_dir, "ghostty-wsl-helper" });
+        };
+        std.mem.replaceScalar(u8, helper_path, '\\', '/');
+
+        self.bridge = try wslbridge.WslBridgePty.open(.{
+            .ws_row = std.math.cast(u16, self.grid_size.rows) orelse std.math.maxInt(u16),
+            .ws_col = std.math.cast(u16, self.grid_size.columns) orelse std.math.maxInt(u16),
+            .ws_xpixel = std.math.cast(u16, self.screen_size.width) orelse std.math.maxInt(u16),
+            .ws_ypixel = std.math.cast(u16, self.screen_size.height) orelse std.math.maxInt(u16),
+        });
+        const bridge = &(self.bridge.?);
+        errdefer {
+            bridge.deinit();
+            self.bridge = null;
+        }
+
+        // The helper's Windows path is translated to a Linux one inside
+        // the same wsl.exe invocation ($0), so no extra process spawn
+        // is needed for wslpath. /bin/sh runs the substitution because
+        // the user's login shell may not be POSIX (fish).
+        const script = if (bcfg.command != null) try std.fmt.allocPrintSentinel(
+            arena,
+            "exec \"$(wslpath -a \"$0\")\" --cols {d} --rows {d} --term '{s}' -- /bin/sh -c \"$1\"",
+            .{ self.grid_size.columns, self.grid_size.rows, bcfg.term },
+            0,
+        ) else try std.fmt.allocPrintSentinel(
+            arena,
+            "exec \"$(wslpath -a \"$0\")\" --cols {d} --rows {d} --term '{s}'",
+            .{ self.grid_size.columns, self.grid_size.rows, bcfg.term },
+            0,
+        );
+
+        var args: std.ArrayList([:0]const u8) = .empty;
+        try args.append(arena, "wsl.exe");
+        if (bcfg.distribution) |distribution| {
+            try args.append(arena, "--distribution");
+            try args.append(arena, distribution);
+        }
+        try args.append(arena, "--exec");
+        try args.append(arena, "/bin/sh");
+        try args.append(arena, "-c");
+        try args.append(arena, script);
+        try args.append(arena, try arena.dupeZ(u8, helper_path));
+        if (bcfg.command) |command| try args.append(arena, command);
+
+        const cwd: ?[:0]const u8 = if (self.cwd) |proposed| cwd: {
+            if (std.fs.cwd().access(proposed, .{})) {
+                break :cwd proposed;
+            } else |err| {
+                log.warn("cannot access cwd, ignoring: {}", .{err});
+                break :cwd null;
+            }
+        } else null;
+
+        var cmd: Command = .{
+            .path = args.items[0],
+            .args = args.items,
+            .env = if (self.env) |*env| env else null,
+            .cwd = cwd,
+            .stdin = .{ .handle = bridge.child_stdin },
+            .stdout = .{ .handle = bridge.child_stdout },
+            // wsl.exe's own errors are worth seeing in the terminal.
+            .stderr = .{ .handle = bridge.child_stdout },
+            .pseudo_console = null,
+            .os_pre_exec = null,
+            .rt_pre_exec = if (comptime @hasDecl(apprt.runtime, "pre_exec")) apprt.runtime.pre_exec.preExec else null,
+            .rt_pre_exec_info = self.rt_pre_exec_info,
+            .rt_post_fork = if (comptime @hasDecl(apprt.runtime, "post_fork")) apprt.runtime.post_fork.postFork else null,
+            .rt_post_fork_info = self.rt_post_fork_info,
+            .data = self,
+        };
+        try cmd.start(alloc);
+        errdefer killCommand(&cmd) catch |err| {
+            log.warn("error killing command during cleanup err={}", .{err});
+        };
+        log.info("started WSL bridge session pid={?}", .{cmd.pid});
+        self.process = .{ .fork_exec = cmd };
+
+        bridge.closeChildSide();
+        try bridge.startPump();
+
+        // The command line only carried cols/rows; deliver the pixel
+        // sizes too now that frames flow.
+        bridge.setSize(bridge.size) catch |err| {
+            log.warn("error sending initial size to WSL bridge err={}", .{err});
+        };
+
+        // Successful start: drop state only needed for spawning, same
+        // as the ConPTY path.
+        if (self.env) |*env| {
+            env.deinit();
+            self.env = null;
+        }
+
+        return .{
+            .read = bridge.out_pipe,
+            .write = bridge.in_pipe,
+        };
+    }
+
     /// This should be called after fork but before exec in the child process.
     /// To repeat: this function RUNS IN THE FORKED CHILD PROCESS before
     /// exec is called; it does NOT run in the main Ghostty process.
@@ -1121,6 +1272,17 @@ const Subprocess = struct {
     ) !void {
         self.grid_size = grid_size;
         self.screen_size = screen_size;
+
+        if (comptime builtin.os.tag == .windows) {
+            if (self.bridge) |*bridge| {
+                return try bridge.setSize(.{
+                    .ws_row = std.math.cast(u16, grid_size.rows) orelse std.math.maxInt(u16),
+                    .ws_col = std.math.cast(u16, grid_size.columns) orelse std.math.maxInt(u16),
+                    .ws_xpixel = std.math.cast(u16, screen_size.width) orelse std.math.maxInt(u16),
+                    .ws_ypixel = std.math.cast(u16, screen_size.height) orelse std.math.maxInt(u16),
+                });
+            }
+        }
 
         if (self.pty) |*pty| {
             // It is theoretically possible for the grid or screen size to
