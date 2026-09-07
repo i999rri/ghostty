@@ -129,14 +129,51 @@ fn childEnv(alloc: std.mem.Allocator, term: ?[:0]const u8) [*:null]const ?[*:0]c
     return @ptrCast(list.items.ptr);
 }
 
+/// The user's shell: $SHELL when set, else the passwd entry for the
+/// current uid, else /bin/sh. `wsl.exe --exec` bypasses WSL's own
+/// shell resolution, so the helper redoes it.
+fn resolveShell(alloc: std.mem.Allocator) [:0]const u8 {
+    if (posix.getenvZ("SHELL")) |shell| return shell;
+
+    fallback: {
+        const contents = std.fs.cwd().readFileAlloc(alloc, "/etc/passwd", 1024 * 1024) catch
+            break :fallback;
+        const uid = linux.geteuid();
+        var lines = std.mem.splitScalar(u8, contents, '\n');
+        while (lines.next()) |line| {
+            // name:password:uid:gid:gecos:home:shell
+            var fields = std.mem.splitScalar(u8, line, ':');
+            _ = fields.next() orelse continue;
+            _ = fields.next() orelse continue;
+            const entry_uid = std.fmt.parseInt(u32, fields.next() orelse continue, 10) catch continue;
+            if (entry_uid != uid) continue;
+            _ = fields.next() orelse continue;
+            _ = fields.next() orelse continue;
+            _ = fields.next() orelse continue;
+            const shell = fields.next() orelse continue;
+            if (shell.len == 0) break :fallback;
+            return alloc.dupeZ(u8, shell) catch break :fallback;
+        }
+    }
+
+    return "/bin/sh";
+}
+
 fn spawnChild(pty: *const Pty, args: Args, alloc: std.mem.Allocator) posix.pid_t {
     // Resolve argv before forking; allocation after fork is unsafe.
     var argv: std.ArrayList(?[*:0]const u8) = .empty;
+    var exec_file: [*:0]const u8 = undefined;
     if (args.command.len > 0) {
         for (args.command) |arg| argv.append(alloc, arg) catch fatal("out of memory", .{});
+        exec_file = args.command[0];
     } else {
-        const shell = posix.getenvZ("SHELL") orelse "/bin/sh";
-        argv.append(alloc, shell.ptr) catch fatal("out of memory", .{});
+        const shell = resolveShell(alloc);
+        // Login shell convention: leading "-" in argv[0]. A terminal
+        // session is expected to load the user's profile.
+        const argv0 = std.fmt.allocPrintSentinel(alloc, "-{s}", .{std.fs.path.basename(shell)}, 0) catch
+            fatal("out of memory", .{});
+        argv.append(alloc, argv0) catch fatal("out of memory", .{});
+        exec_file = shell;
     }
     argv.append(alloc, null) catch fatal("out of memory", .{});
     const argv_z: [*:null]const ?[*:0]const u8 = @ptrCast(argv.items.ptr);
@@ -159,7 +196,7 @@ fn spawnChild(pty: *const Pty, args: Args, alloc: std.mem.Allocator) posix.pid_t
     if (slave > 2) posix.close(slave);
     posix.close(pty.master);
 
-    const err = posix.execvpeZ(argv_z[0].?, argv_z, envp);
+    const err = posix.execvpeZ(exec_file, argv_z, envp);
     std.debug.print("ghostty-wsl-helper: exec failed: {}\n", .{err});
     posix.exit(127);
 }
