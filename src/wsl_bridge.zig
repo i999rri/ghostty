@@ -52,10 +52,18 @@ pub const WslBridgePty = struct {
     pump: ?std.Thread,
     size: winsize,
 
+    /// A kill-on-close job holding wsl.exe. When this process exits —
+    /// cleanly or by crash — the OS closes this handle, the job empties,
+    /// and wsl.exe dies, which the helper detects (stdout POLLERR) and
+    /// tears its pty down. Without it a hard kill orphans the whole
+    /// wsl.exe tree and leaves the helper running in the distro.
+    job: ?windows.HANDLE,
+
     pub const OpenError = error{Unexpected} || std.Thread.SpawnError;
 
     pub fn open(size: winsize) OpenError!WslBridgePty {
         var self: WslBridgePty = .{
+            .job = null,
             .out_pipe = undefined,
             .in_pipe = undefined,
             .child_stdin = undefined,
@@ -161,6 +169,31 @@ pub const WslBridgePty = struct {
         self.pump = try std.Thread.spawn(.{}, pumpThread, .{self});
     }
 
+    /// Put wsl.exe into a kill-on-close job so it dies with this
+    /// process. Best-effort: a failure only forfeits crash cleanup, so
+    /// it is logged and swallowed rather than failing the session.
+    pub fn superviseProcess(self: *WslBridgePty, process: windows.HANDLE) void {
+        const job = windows.exp.kernel32.CreateJobObjectW(null, null) orelse {
+            log.warn("wsl bridge: CreateJobObject failed, no crash cleanup", .{});
+            return;
+        };
+        var info: windows.exp.JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std.mem.zeroes(
+            windows.exp.JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        );
+        info.BasicLimitInformation.LimitFlags = windows.exp.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (windows.exp.kernel32.SetInformationJobObject(
+            job,
+            windows.exp.JobObjectExtendedLimitInformation,
+            &info,
+            @sizeOf(windows.exp.JOBOBJECT_EXTENDED_LIMIT_INFORMATION),
+        ) == 0 or windows.exp.kernel32.AssignProcessToJobObject(job, process) == 0) {
+            log.warn("wsl bridge: job setup failed, no crash cleanup", .{});
+            _ = windows.CloseHandle(job);
+            return;
+        }
+        self.job = job;
+    }
+
     /// Close our copies of the ends wsl.exe inherited, so pipe EOF
     /// tracks the child process and not this side.
     pub fn closeChildSide(self: *WslBridgePty) void {
@@ -185,6 +218,10 @@ pub const WslBridgePty = struct {
 
         _ = windows.CloseHandle(self.out_pipe);
         if (self.child_stdin != windows.INVALID_HANDLE_VALUE) self.closeChildSide();
+
+        // Closing the job here kills wsl.exe if it is still alive; on a
+        // clean close the hangup above already wound it down.
+        if (self.job) |job| _ = windows.CloseHandle(job);
         self.* = undefined;
     }
 
