@@ -663,6 +663,9 @@ pub fn init(
             .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
             .resources_dir = global_state.resources_dir.host(),
             .term = config.term,
+            .wsl_bridge = config.@"wsl-bridge",
+            .wsl_bridge_distribution = config.@"wsl-bridge-distribution",
+            .wsl_bridge_command = config.@"wsl-bridge-command",
             .rt_pre_exec_info = .init(config),
             .rt_post_fork_info = .init(config),
         });
