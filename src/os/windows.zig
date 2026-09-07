@@ -6,6 +6,8 @@ const windows = std.os.windows;
 pub const kernel32 = windows.kernel32;
 pub const unexpectedError = windows.unexpectedError;
 pub const OpenFile = windows.OpenFile;
+pub const ReadFile = windows.ReadFile;
+pub const WriteFile = windows.WriteFile;
 pub const CloseHandle = windows.CloseHandle;
 pub const GetCurrentProcessId = windows.GetCurrentProcessId;
 pub const SetHandleInformation = windows.SetHandleInformation;
@@ -36,6 +38,7 @@ pub const exp = struct {
 
     pub const CREATE_UNICODE_ENVIRONMENT = 0x00000400;
     pub const EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+    pub const CREATE_NO_WINDOW = 0x08000000;
     pub const LPPROC_THREAD_ATTRIBUTE_LIST = ?*anyopaque;
     pub const FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000;
 
