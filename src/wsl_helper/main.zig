@@ -12,8 +12,9 @@
 //!
 //!   [type: u8][len: u16 LE][payload: len bytes]
 //!
-//!   type 0 = data:   payload is written to the pty as-is
-//!   type 1 = resize: payload is 4x u16 LE (cols, rows, xpixel, ypixel)
+//!   type 0 = data:    payload is written to the pty as-is
+//!   type 1 = resize:  payload is 4x u16 LE (cols, rows, xpixel, ypixel)
+//!   type 2 = hangup:  no payload; close the pty (SIGHUP) and exit
 //!
 //! Unknown frame types are skipped so the protocol can grow without
 //! breaking older helpers.
@@ -24,6 +25,7 @@ const posix = std.posix;
 
 const frame_data: u8 = 0;
 const frame_resize: u8 = 1;
+const frame_hangup: u8 = 2;
 
 const frame_header_len = 3;
 const max_frame_payload = std.math.maxInt(u16);
@@ -203,6 +205,7 @@ const FrameParser = struct {
                     std.mem.readInt(u16, payload[4..6], .little),
                     std.mem.readInt(u16, payload[6..8], .little),
                 ),
+                frame_hangup => return error.Hangup,
                 else => {}, // Unknown type: skip for forward compatibility.
             }
             start += frame_header_len + payload_len;
@@ -235,20 +238,24 @@ pub fn main() void {
     };
     posix.sigaction(posix.SIG.PIPE, &sa, null);
 
-    // Entry 0 is the pty master so the loop can keep polling it alone
-    // after stdin reaches EOF: EOF only ends the input side, while the
-    // child keeps running and its remaining output still matters.
+    // stdin EOF only ends the input side: the child keeps running and
+    // its remaining output still matters, so the pty stays polled (the
+    // stdin entry is parked at fd -1, which poll ignores). stdout is
+    // watched with no events so its POLLERR still reports the Windows
+    // side tearing the pipes down, e.g. by killing wsl.exe.
     var fds = [_]posix.pollfd{
         .{ .fd = pty.master, .events = posix.POLL.IN, .revents = 0 },
         .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
+        .{ .fd = posix.STDOUT_FILENO, .events = 0, .revents = 0 },
     };
-    var nfds: usize = fds.len;
 
     relay: while (true) {
-        _ = posix.poll(fds[0..nfds], -1) catch |err| switch (err) {
+        _ = posix.poll(&fds, -1) catch |err| switch (err) {
             error.SystemResources => continue,
             else => break :relay,
         };
+
+        if (fds[2].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0) break :relay;
 
         // Drain the pty first so pending output survives child exit.
         if (fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR) != 0) {
@@ -260,10 +267,10 @@ pub fn main() void {
             }
         }
 
-        if (nfds > 1 and fds[1].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR) != 0) {
+        if (fds[1].fd >= 0 and fds[1].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR) != 0) {
             const n = posix.read(posix.STDIN_FILENO, &buf) catch 0;
             if (n == 0) {
-                nfds = 1;
+                fds[1].fd = -1;
             } else {
                 parser.feed(&pty, buf[0..n]) catch break :relay;
             }
