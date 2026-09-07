@@ -882,16 +882,24 @@ const Subprocess = struct {
         // https://github.com/ghostty-org/ghostty/discussions/7769
         if (cwd) |pwd| try env.put("PWD", pwd);
 
+        // All arena allocations must finish before the struct literal
+        // below: `.arena = arena` copies the arena by value, snapshotting
+        // its position, and any dupeZ evaluated as a sibling field would
+        // be lost from that copy — later start() allocations would then
+        // reuse and clobber those bytes. Hoisting them here keeps the
+        // copied arena's position past every allocation.
+        const wsl_bridge_cfg: ?WslBridgeConfig = if (builtin.os.tag == .windows and cfg.wsl_bridge) .{
+            .distribution = if (cfg.wsl_bridge_distribution) |v| try alloc.dupeZ(u8, v) else null,
+            .command = if (cfg.wsl_bridge_command) |v| try alloc.dupeZ(u8, v) else null,
+            .term = try alloc.dupeZ(u8, cfg.term),
+        } else null;
+
         return .{
             .arena = arena,
             .env = env,
             .cwd = cwd,
             .args = args,
-            .wsl_bridge_cfg = if (builtin.os.tag == .windows and cfg.wsl_bridge) .{
-                .distribution = if (cfg.wsl_bridge_distribution) |v| try alloc.dupeZ(u8, v) else null,
-                .command = if (cfg.wsl_bridge_command) |v| try alloc.dupeZ(u8, v) else null,
-                .term = try alloc.dupeZ(u8, cfg.term),
-            } else null,
+            .wsl_bridge_cfg = wsl_bridge_cfg,
 
             .rt_pre_exec_info = cfg.rt_pre_exec_info,
             .rt_post_fork_info = cfg.rt_post_fork_info,
