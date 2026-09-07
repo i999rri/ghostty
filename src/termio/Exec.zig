@@ -1553,6 +1553,18 @@ pub const ReadThread = struct {
                         // Check for a quit signal
                         .OPERATION_ABORTED => break,
 
+                        // The write side is gone: the child exited (a
+                        // WSL bridge session) or the pty was torn down.
+                        // Wait for the quit signal so surface teardown
+                        // stays in charge of shutdown ordering.
+                        .BROKEN_PIPE => {
+                            log.info("pty pipe closed, read thread waiting for quit", .{});
+                            var quit_buf: [1]u8 = undefined;
+                            var quit_n: windows.DWORD = 0;
+                            _ = windows.kernel32.ReadFile(quit, &quit_buf, 1, &quit_n, null);
+                            return;
+                        },
+
                         else => {
                             log.err("io reader error err={}", .{err});
                             unreachable;
