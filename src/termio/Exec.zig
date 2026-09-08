@@ -574,9 +574,7 @@ pub const Config = struct {
     working_directory: ?[]const u8 = null,
     resources_dir: ?[]const u8,
     term: []const u8,
-    wsl_bridge: bool = false,
-    wsl_bridge_distribution: ?[]const u8 = null,
-    wsl_bridge_command: ?[]const u8 = null,
+    wsl_bridge: bool = true,
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -616,10 +614,21 @@ const Subprocess = struct {
     };
 
     const WslBridgeConfig = struct {
-        distribution: ?[:0]const u8,
-        command: ?[:0]const u8,
+        /// The user's full `wsl [args]` argv. startWslBridge re-interprets
+        /// it: a leading `-d`/`--distribution NAME` selects the distro and
+        /// the rest is the in-distro command (empty = login shell).
+        wsl_argv: []const [:0]const u8,
         term: [:0]const u8,
     };
+
+    /// True when argv would launch WSL, i.e. its program is `wsl` or
+    /// `wsl.exe` (case-insensitive), so the session can be routed through
+    /// the pty bridge instead of ConPTY.
+    fn isWslCommand(program: []const u8) bool {
+        const base = std.fs.path.basename(program);
+        return std.ascii.eqlIgnoreCase(base, "wsl") or
+            std.ascii.eqlIgnoreCase(base, "wsl.exe");
+    }
 
     const PtyFds = struct {
         read: Pty.Fd,
@@ -882,17 +891,25 @@ const Subprocess = struct {
         // https://github.com/ghostty-org/ghostty/discussions/7769
         if (cwd) |pwd| try env.put("PWD", pwd);
 
+        // Route WSL sessions through the pty bridge instead of ConPTY:
+        // any session whose command is `wsl`/`wsl.exe` qualifies, so a
+        // pwsh tab stays on ConPTY while a `wsl` tab bypasses it.
+        //
         // All arena allocations must finish before the struct literal
         // below: `.arena = arena` copies the arena by value, snapshotting
         // its position, and any dupeZ evaluated as a sibling field would
         // be lost from that copy — later start() allocations would then
         // reuse and clobber those bytes. Hoisting them here keeps the
         // copied arena's position past every allocation.
-        const wsl_bridge_cfg: ?WslBridgeConfig = if (builtin.os.tag == .windows and cfg.wsl_bridge) .{
-            .distribution = if (cfg.wsl_bridge_distribution) |v| try alloc.dupeZ(u8, v) else null,
-            .command = if (cfg.wsl_bridge_command) |v| try alloc.dupeZ(u8, v) else null,
-            .term = try alloc.dupeZ(u8, cfg.term),
-        } else null;
+        const wsl_bridge_cfg: ?WslBridgeConfig =
+            if (builtin.os.tag == .windows and cfg.wsl_bridge and
+            args.len > 0 and isWslCommand(args[0]))
+                .{
+                    .wsl_argv = args,
+                    .term = try alloc.dupeZ(u8, cfg.term),
+                }
+            else
+                null;
 
         return .{
             .arena = arena,
@@ -1150,34 +1167,60 @@ const Subprocess = struct {
             self.bridge = null;
         }
 
+        // Re-interpret the user's `wsl [args]`: pull out the distribution
+        // flag and treat the rest as the in-distro command. A lone `~`
+        // (from `wsl ~`) just means the home directory, i.e. a plain
+        // login shell, so it carries no command.
+        var distribution: ?[:0]const u8 = null;
+        var command: []const [:0]const u8 = &.{};
+        {
+            var i: usize = 1; // skip argv[0] (wsl)
+            while (i < bcfg.wsl_argv.len) : (i += 1) {
+                const arg = bcfg.wsl_argv[i];
+                if ((std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--distribution")) and
+                    i + 1 < bcfg.wsl_argv.len)
+                {
+                    distribution = bcfg.wsl_argv[i + 1];
+                    i += 1;
+                } else if (std.mem.eql(u8, arg, "--")) {
+                    command = bcfg.wsl_argv[i + 1 ..];
+                    break;
+                } else if (std.mem.eql(u8, arg, "~")) {
+                    // login shell in home; nothing to run
+                } else {
+                    command = bcfg.wsl_argv[i..];
+                    break;
+                }
+            }
+        }
+
         // The helper's Windows path is translated to a Linux one inside
-        // the same wsl.exe invocation ($0), so no extra process spawn
-        // is needed for wslpath. /bin/sh runs the substitution because
-        // the user's login shell may not be POSIX (fish).
-        const script = if (bcfg.command != null) try std.fmt.allocPrintSentinel(
+        // the same wsl.exe invocation ($0), so no extra process spawn is
+        // needed for wslpath. "$@" forwards the command argv (if any) to
+        // the helper, which execs it directly; with none it runs the
+        // login shell.
+        const script = try std.fmt.allocPrintSentinel(
             arena,
-            "exec \"$(wslpath -a \"$0\")\" --cols {d} --rows {d} --term '{s}' -- /bin/sh -c \"$1\"",
-            .{ self.grid_size.columns, self.grid_size.rows, bcfg.term },
-            0,
-        ) else try std.fmt.allocPrintSentinel(
-            arena,
-            "exec \"$(wslpath -a \"$0\")\" --cols {d} --rows {d} --term '{s}'",
+            "exec \"$(wslpath -a \"$0\")\" --cols {d} --rows {d} --term '{s}' \"$@\"",
             .{ self.grid_size.columns, self.grid_size.rows, bcfg.term },
             0,
         );
 
         var args: std.ArrayList([:0]const u8) = .empty;
         try args.append(arena, "wsl.exe");
-        if (bcfg.distribution) |distribution| {
+        if (distribution) |d| {
             try args.append(arena, "--distribution");
-            try args.append(arena, distribution);
+            try args.append(arena, d);
         }
         try args.append(arena, "--exec");
         try args.append(arena, "/bin/sh");
         try args.append(arena, "-c");
         try args.append(arena, script);
         try args.append(arena, try arena.dupeZ(u8, helper_path));
-        if (bcfg.command) |command| try args.append(arena, command);
+        if (command.len > 0) {
+            try args.append(arena, "--");
+            for (command) |token| try args.append(arena, token);
+        }
 
         const cwd: ?[:0]const u8 = if (self.cwd) |proposed| cwd: {
             if (std.fs.cwd().access(proposed, .{})) {

@@ -3701,25 +3701,21 @@ else
 /// from working properly. https://github.com/vim/vim/pull/13211 fixes this.
 term: []const u8 = "xterm-ghostty",
 
-/// Run WSL sessions on a real Linux pty inside the distro instead of
-/// driving `wsl.exe` through ConPTY. ConPTY re-renders the VT stream,
-/// so the bytes applications actually write never reach the terminal;
-/// the bridge relays them untouched (GhosttyWin32#206).
+/// Route WSL sessions through a real Linux pty inside the distro
+/// instead of driving `wsl.exe` through ConPTY. ConPTY re-renders the
+/// VT stream, so the bytes applications actually write never reach the
+/// terminal; the bridge relays them untouched (GhosttyWin32#206).
 ///
-/// When enabled, `command` is ignored for the session: the distro's
-/// login shell is launched, or `wsl-bridge-command` when set.
+/// This applies per session: any session whose command is `wsl` or
+/// `wsl.exe` is routed through the bridge, so a normal shell tab is
+/// unaffected while a `wsl` tab bypasses ConPTY. The distribution and
+/// in-distro command are taken from the `wsl` command itself, e.g.
+/// `wsl -d NixOS` or `wsl -d NixOS -- htop`.
+///
+/// Set to false to run `wsl` under ConPTY like any other command.
 ///
 /// Windows only.
-@"wsl-bridge": bool = false,
-
-/// The WSL distribution to connect to. When unset, the default
-/// distribution is used. Only used when `wsl-bridge` is enabled.
-@"wsl-bridge-distribution": ?[:0]const u8 = null,
-
-/// The command to run inside the distro, executed with `/bin/sh -c`.
-/// When unset, the user's login shell is launched. Only used when
-/// `wsl-bridge` is enabled.
-@"wsl-bridge-command": ?[:0]const u8 = null,
+@"wsl-bridge": bool = true,
 
 /// String to send when we receive `ENQ` (`0x05`) from the command that we are
 /// running. Defaults to an empty string if not set.
