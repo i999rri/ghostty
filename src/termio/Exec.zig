@@ -1238,8 +1238,9 @@ const Subprocess = struct {
             .cwd = cwd,
             .stdin = .{ .handle = bridge.child_stdin },
             .stdout = .{ .handle = bridge.child_stdout },
-            // wsl.exe's own errors are worth seeing in the terminal.
-            .stderr = .{ .handle = bridge.child_stdout },
+            // stdout is a frame stream now, so diagnostics get their own
+            // pipe; the bridge relays them into the terminal.
+            .stderr = .{ .handle = bridge.child_stderr },
             .pseudo_console = null,
             .os_pre_exec = null,
             .rt_pre_exec = if (comptime @hasDecl(apprt.runtime, "pre_exec")) apprt.runtime.pre_exec.preExec else null,
@@ -1456,6 +1457,15 @@ const Subprocess = struct {
     pub fn getProcessInfo(self: *Subprocess, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
         const pty = &(self.pty orelse return null);
         return pty.getProcessInfo(info);
+    }
+
+    /// The foreground process name of a WSL bridge session, copied into
+    /// `out`. Returns 0 for non-bridge sessions: their foreground
+    /// process is a Windows pid the host can resolve by itself.
+    pub fn foregroundProcessName(self: *Subprocess, out: []u8) usize {
+        if (comptime builtin.os.tag != .windows) return 0;
+        var bridge = &(self.bridge orelse return 0);
+        return bridge.foregroundName(out);
     }
 };
 
@@ -1841,6 +1851,11 @@ fn execCommand(
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Exec, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.subprocess.getProcessInfo(info);
+}
+
+/// See Subprocess.foregroundProcessName.
+pub fn foregroundProcessName(self: *Exec, out: []u8) usize {
+    return self.subprocess.foregroundProcessName(out);
 }
 
 test "execCommand darwin: shell command" {

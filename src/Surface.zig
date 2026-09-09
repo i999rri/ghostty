@@ -6385,6 +6385,12 @@ pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.T
     return self.io.getProcessInfo(info);
 }
 
+/// The foreground process name of a WSL bridge session, copied into
+/// `out`; 0 when the session has no bridge-reported name.
+pub fn foregroundProcessName(self: *Surface, out: []u8) usize {
+    return self.io.foregroundProcessName(out);
+}
+
 test "Surface: selection logic" {
     // We disable format to make these easier to
     // read by pairing sets of coordinates per line.
