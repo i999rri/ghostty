@@ -191,6 +191,9 @@ pub fn build(b: *std.Build) !void {
             lib_shared.installHeader(); // Only need one header
             if (config.target.result.os.tag == .windows) {
                 lib_shared.install("ghostty-internal.dll");
+                // The import library must track the DLL's exports or new
+                // C APIs fail to link in the host.
+                lib_shared.installImplib("ghostty-internal.lib");
                 lib_static.install("ghostty-internal-static.lib");
             } else {
                 lib_shared.install("ghostty-internal.so");
