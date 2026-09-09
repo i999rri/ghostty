@@ -7,17 +7,23 @@
 //! the Windows terminal a byte-exact VT stream, bypassing ConPTY's
 //! re-rendering entirely.
 //!
-//! Wire protocol: stdout carries raw pty output. stdin carries frames,
-//! because resize has no side channel over a pipe:
+//! Wire protocol: both directions carry frames — stdin because resize
+//! has no side channel over a pipe, stdout because out-of-band reports
+//! (the foreground process name) must not pollute the pty byte stream:
 //!
 //!   [type: u8][len: u16 LE][payload: len bytes]
 //!
+//! stdin (host -> helper):
 //!   type 0 = data:    payload is written to the pty as-is
 //!   type 1 = resize:  payload is 4x u16 LE (cols, rows, xpixel, ypixel)
 //!   type 2 = hangup:  no payload; close the pty (SIGHUP) and exit
 //!
-//! Unknown frame types are skipped so the protocol can grow without
-//! breaking older helpers.
+//! stdout (helper -> host):
+//!   type 0 = data:    raw pty output, byte-exact inside the payload
+//!   type 3 = fg-name: the foreground process's comm name
+//!
+//! stderr stays plain text for diagnostics. Unknown frame types are
+//! skipped so the protocol can grow without breaking older helpers.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -26,6 +32,7 @@ const posix = std.posix;
 const frame_data: u8 = 0;
 const frame_resize: u8 = 1;
 const frame_hangup: u8 = 2;
+const frame_fg_name: u8 = 3;
 
 const frame_header_len = 3;
 const max_frame_payload = std.math.maxInt(u16);
@@ -208,6 +215,49 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
     }
 }
 
+fn writeFrame(fd: posix.fd_t, kind: u8, payload: []const u8) !void {
+    var header: [frame_header_len]u8 = undefined;
+    header[0] = kind;
+    std.mem.writeInt(u16, header[1..3], @intCast(payload.len), .little);
+    try writeAll(fd, &header);
+    try writeAll(fd, payload);
+}
+
+fn writeDataFrames(fd: posix.fd_t, bytes: []const u8) !void {
+    var remaining = bytes;
+    while (remaining.len > 0) {
+        const take = @min(remaining.len, max_frame_payload);
+        try writeFrame(fd, frame_data, remaining[0..take]);
+        remaining = remaining[take..];
+    }
+}
+
+/// Reports the foreground process's comm name on stdout when it
+/// changes. The host shows it in the tab title; a Windows-side pid
+/// lookup cannot see into the distro, so the name is resolved here.
+const ForegroundTracker = struct {
+    master: posix.fd_t,
+    last_pgrp: i32 = 0,
+
+    fn check(self: *ForegroundTracker) void {
+        var pgrp: i32 = 0;
+        const rc = linux.tcgetpgrp(self.master, &pgrp);
+        if (linux.E.init(rc) != .SUCCESS) return;
+        if (pgrp <= 0 or pgrp == self.last_pgrp) return;
+        self.last_pgrp = pgrp;
+
+        var path_buf: [64:0]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pgrp}) catch return;
+        const fd = posix.openZ(path, .{ .ACCMODE = .RDONLY }, 0) catch return;
+        defer posix.close(fd);
+        var name_buf: [256]u8 = undefined;
+        const n = posix.read(fd, &name_buf) catch return;
+        const name = std.mem.trimRight(u8, name_buf[0..n], "\n");
+        if (name.len == 0) return;
+        writeFrame(posix.STDOUT_FILENO, frame_fg_name, name) catch {};
+    }
+};
+
 /// Incremental parser for the stdin frame stream. Frames can split
 /// across reads, so bytes accumulate here until a frame completes.
 const FrameParser = struct {
@@ -264,6 +314,7 @@ pub fn main() void {
     const child = spawnChild(&pty, args, alloc);
 
     var parser: FrameParser = .{};
+    var fg: ForegroundTracker = .{ .master = pty.master };
     var buf: [64 * 1024]u8 = undefined;
 
     // A broken stdout means the Windows side is gone; that surfaces as
@@ -287,10 +338,12 @@ pub fn main() void {
     };
 
     relay: while (true) {
-        _ = posix.poll(&fds, -1) catch |err| switch (err) {
+        // The timeout doubles as the foreground-name poll cadence.
+        _ = posix.poll(&fds, 500) catch |err| switch (err) {
             error.SystemResources => continue,
             else => break :relay,
         };
+        fg.check();
 
         if (fds[2].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0) break :relay;
 
@@ -299,7 +352,7 @@ pub fn main() void {
             while (true) {
                 const n = posix.read(pty.master, &buf) catch break :relay;
                 if (n == 0) break :relay;
-                writeAll(posix.STDOUT_FILENO, buf[0..n]) catch break :relay;
+                writeDataFrames(posix.STDOUT_FILENO, buf[0..n]) catch break :relay;
                 if (n < buf.len) break;
             }
         }
