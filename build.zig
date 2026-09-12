@@ -191,12 +191,36 @@ pub fn build(b: *std.Build) !void {
             lib_shared.installHeader(); // Only need one header
             if (config.target.result.os.tag == .windows) {
                 lib_shared.install("ghostty-internal.dll");
+                // The import library must track the DLL's exports or new
+                // C APIs fail to link in the host.
+                lib_shared.installImplib("ghostty-internal.lib");
                 lib_static.install("ghostty-internal-static.lib");
             } else {
                 lib_shared.install("ghostty-internal.so");
                 lib_static.install("ghostty-internal.a");
             }
         }
+    }
+
+    // The WSL bridge helper (GhosttyWin32#206) runs inside the WSL
+    // distro, so it is always a Linux binary regardless of host target.
+    if (config.target.result.os.tag == .windows) {
+        const wsl_helper = b.addExecutable(.{
+            .name = "ghostty-wsl-helper",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/wsl_helper/main.zig"),
+                .target = b.resolveTargetQuery(.{
+                    .cpu_arch = .x86_64,
+                    .os_tag = .linux,
+                    .abi = .musl,
+                }),
+                .optimize = config.optimize,
+            }),
+        });
+        b.installArtifact(wsl_helper);
+        b.step("wsl-helper", "Build only the WSL bridge helper").dependOn(
+            &b.addInstallArtifact(wsl_helper, .{}).step,
+        );
     }
 
     // macOS only artifacts. These will error if they're initialized for

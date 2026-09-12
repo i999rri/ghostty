@@ -1,0 +1,397 @@
+//! WSL-side relay for the GhosttyWin32 direct pty bridge.
+//!
+//! Runs inside the WSL distro, spawned by the Windows host through
+//! `wsl.exe`. Opens a real Linux pty, executes the requested command
+//! on its slave side, and relays bytes between the pty master and the
+//! stdio pipes that `wsl.exe` extends to the Windows side. This gives
+//! the Windows terminal a byte-exact VT stream, bypassing ConPTY's
+//! re-rendering entirely.
+//!
+//! Wire protocol: both directions carry frames — stdin because resize
+//! has no side channel over a pipe, stdout because out-of-band reports
+//! (the foreground process name) must not pollute the pty byte stream:
+//!
+//!   [type: u8][len: u16 LE][payload: len bytes]
+//!
+//! stdin (host -> helper):
+//!   type 0 = data:    payload is written to the pty as-is
+//!   type 1 = resize:  payload is 4x u16 LE (cols, rows, xpixel, ypixel)
+//!   type 2 = hangup:  no payload; close the pty (SIGHUP) and exit
+//!
+//! stdout (helper -> host):
+//!   type 0 = data:    raw pty output, byte-exact inside the payload
+//!   type 3 = fg-name: the foreground process's comm name
+//!
+//! stderr stays plain text for diagnostics. Unknown frame types are
+//! skipped so the protocol can grow without breaking older helpers.
+
+const std = @import("std");
+const linux = std.os.linux;
+const posix = std.posix;
+
+const frame_data: u8 = 0;
+const frame_resize: u8 = 1;
+const frame_hangup: u8 = 2;
+const frame_fg_name: u8 = 3;
+
+const frame_header_len = 3;
+const max_frame_payload = std.math.maxInt(u16);
+
+const Args = struct {
+    cols: u16 = 80,
+    rows: u16 = 24,
+    term: ?[:0]const u8 = null,
+    command: []const [*:0]const u8 = &.{},
+};
+
+fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
+    std.debug.print("ghostty-wsl-helper: " ++ fmt ++ "\n", args);
+    posix.exit(1);
+}
+
+fn parseArgs() Args {
+    var result: Args = .{};
+    const argv = std.os.argv;
+    var i: usize = 1;
+    while (i < argv.len) : (i += 1) {
+        const arg = std.mem.span(argv[i]);
+        if (std.mem.eql(u8, arg, "--")) {
+            result.command = @ptrCast(argv[i + 1 ..]);
+            break;
+        } else if (std.mem.eql(u8, arg, "--cols")) {
+            i += 1;
+            if (i >= argv.len) fatal("--cols requires a value", .{});
+            result.cols = std.fmt.parseInt(u16, std.mem.span(argv[i]), 10) catch
+                fatal("invalid --cols value", .{});
+        } else if (std.mem.eql(u8, arg, "--rows")) {
+            i += 1;
+            if (i >= argv.len) fatal("--rows requires a value", .{});
+            result.rows = std.fmt.parseInt(u16, std.mem.span(argv[i]), 10) catch
+                fatal("invalid --rows value", .{});
+        } else if (std.mem.eql(u8, arg, "--term")) {
+            i += 1;
+            if (i >= argv.len) fatal("--term requires a value", .{});
+            result.term = std.mem.span(argv[i]);
+        } else {
+            fatal("unknown argument: {s}", .{arg});
+        }
+    }
+
+    return result;
+}
+
+const Pty = struct {
+    master: posix.fd_t,
+    slave_path: [32:0]u8,
+
+    fn open(cols: u16, rows: u16) Pty {
+        const master = posix.open(
+            "/dev/ptmx",
+            .{ .ACCMODE = .RDWR, .NOCTTY = true },
+            0,
+        ) catch |err| fatal("opening /dev/ptmx failed: {}", .{err});
+
+        var unlock: c_int = 0;
+        if (linux.ioctl(master, linux.T.IOCSPTLCK, @intFromPtr(&unlock)) != 0)
+            fatal("unlocking pty failed", .{});
+
+        var pts_num: c_uint = 0;
+        if (linux.ioctl(master, linux.T.IOCGPTN, @intFromPtr(&pts_num)) != 0)
+            fatal("querying pts number failed", .{});
+
+        var result: Pty = .{ .master = master, .slave_path = undefined };
+        _ = std.fmt.bufPrintZ(&result.slave_path, "/dev/pts/{d}", .{pts_num}) catch
+            unreachable;
+
+        result.setSize(cols, rows, 0, 0);
+        return result;
+    }
+
+    fn setSize(self: *const Pty, cols: u16, rows: u16, xpixel: u16, ypixel: u16) void {
+        const ws: posix.winsize = .{
+            .row = rows,
+            .col = cols,
+            .xpixel = xpixel,
+            .ypixel = ypixel,
+        };
+        _ = linux.ioctl(self.master, linux.T.IOCSWINSZ, @intFromPtr(&ws));
+    }
+};
+
+/// Build the child's environment: the inherited one, with TERM replaced
+/// when the host asked for a specific value.
+fn childEnv(alloc: std.mem.Allocator, term: ?[:0]const u8) [*:null]const ?[*:0]const u8 {
+    var list: std.ArrayList(?[*:0]const u8) = .empty;
+    for (std.os.environ) |entry| {
+        if (term != null and std.mem.startsWith(u8, std.mem.span(entry), "TERM="))
+            continue;
+        list.append(alloc, entry) catch fatal("out of memory", .{});
+    }
+    if (term) |value| {
+        const entry = std.fmt.allocPrintSentinel(alloc, "TERM={s}", .{value}, 0) catch
+            fatal("out of memory", .{});
+        list.append(alloc, entry) catch fatal("out of memory", .{});
+    }
+    list.append(alloc, null) catch fatal("out of memory", .{});
+    return @ptrCast(list.items.ptr);
+}
+
+/// The user's shell: $SHELL when set, else the passwd entry for the
+/// current uid, else /bin/sh. `wsl.exe --exec` bypasses WSL's own
+/// shell resolution, so the helper redoes it.
+fn resolveShell(alloc: std.mem.Allocator) [:0]const u8 {
+    if (posix.getenvZ("SHELL")) |shell| return shell;
+
+    fallback: {
+        const contents = std.fs.cwd().readFileAlloc(alloc, "/etc/passwd", 1024 * 1024) catch
+            break :fallback;
+        const uid = linux.geteuid();
+        var lines = std.mem.splitScalar(u8, contents, '\n');
+        while (lines.next()) |line| {
+            // name:password:uid:gid:gecos:home:shell
+            var fields = std.mem.splitScalar(u8, line, ':');
+            _ = fields.next() orelse continue;
+            _ = fields.next() orelse continue;
+            const entry_uid = std.fmt.parseInt(u32, fields.next() orelse continue, 10) catch continue;
+            if (entry_uid != uid) continue;
+            _ = fields.next() orelse continue;
+            _ = fields.next() orelse continue;
+            _ = fields.next() orelse continue;
+            const shell = fields.next() orelse continue;
+            if (shell.len == 0) break :fallback;
+            return alloc.dupeZ(u8, shell) catch break :fallback;
+        }
+    }
+
+    return "/bin/sh";
+}
+
+fn spawnChild(pty: *const Pty, args: Args, alloc: std.mem.Allocator) posix.pid_t {
+    // Resolve argv before forking; allocation after fork is unsafe.
+    var argv: std.ArrayList(?[*:0]const u8) = .empty;
+    var exec_file: [*:0]const u8 = undefined;
+    if (args.command.len > 0) {
+        for (args.command) |arg| argv.append(alloc, arg) catch fatal("out of memory", .{});
+        exec_file = args.command[0];
+    } else {
+        const shell = resolveShell(alloc);
+        // Login shell convention: leading "-" in argv[0]. A terminal
+        // session is expected to load the user's profile.
+        const argv0 = std.fmt.allocPrintSentinel(alloc, "-{s}", .{std.fs.path.basename(shell)}, 0) catch
+            fatal("out of memory", .{});
+        argv.append(alloc, argv0) catch fatal("out of memory", .{});
+        exec_file = shell;
+    }
+    argv.append(alloc, null) catch fatal("out of memory", .{});
+    const argv_z: [*:null]const ?[*:0]const u8 = @ptrCast(argv.items.ptr);
+    const envp = childEnv(alloc, args.term);
+
+    const pid = posix.fork() catch |err| fatal("fork failed: {}", .{err});
+    if (pid != 0) return pid;
+
+    // Child: new session, slave pty as controlling terminal and stdio.
+    if (linux.setsid() < 0) posix.exit(1);
+    const slave = posix.openZ(
+        &pty.slave_path,
+        .{ .ACCMODE = .RDWR },
+        0,
+    ) catch posix.exit(1);
+    if (linux.ioctl(slave, linux.T.IOCSCTTY, 0) != 0) posix.exit(1);
+    posix.dup2(slave, 0) catch posix.exit(1);
+    posix.dup2(slave, 1) catch posix.exit(1);
+    posix.dup2(slave, 2) catch posix.exit(1);
+    if (slave > 2) posix.close(slave);
+    posix.close(pty.master);
+
+    const err = posix.execvpeZ(exec_file, argv_z, envp);
+    std.debug.print("ghostty-wsl-helper: exec failed: {}\n", .{err});
+    posix.exit(127);
+}
+
+fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        off += try posix.write(fd, bytes[off..]);
+    }
+}
+
+fn writeFrame(fd: posix.fd_t, kind: u8, payload: []const u8) !void {
+    var header: [frame_header_len]u8 = undefined;
+    header[0] = kind;
+    std.mem.writeInt(u16, header[1..3], @intCast(payload.len), .little);
+    try writeAll(fd, &header);
+    try writeAll(fd, payload);
+}
+
+fn writeDataFrames(fd: posix.fd_t, bytes: []const u8) !void {
+    var remaining = bytes;
+    while (remaining.len > 0) {
+        const take = @min(remaining.len, max_frame_payload);
+        try writeFrame(fd, frame_data, remaining[0..take]);
+        remaining = remaining[take..];
+    }
+}
+
+/// Reports the foreground process's comm name on stdout when it
+/// changes. The host shows it in the tab title; a Windows-side pid
+/// lookup cannot see into the distro, so the name is resolved here.
+/// The comm (short name) of a process, read from /proc.
+fn readComm(pid: i32, buf: []u8) ?[]const u8 {
+    var path_buf: [64:0]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
+    const fd = posix.openZ(path, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer posix.close(fd);
+    const n = posix.read(fd, buf) catch return null;
+    const name = std.mem.trimRight(u8, buf[0..n], "\n");
+    if (name.len == 0) return null;
+    return name;
+}
+
+const ForegroundTracker = struct {
+    master: posix.fd_t,
+    last_pgrp: i32 = 0,
+    /// The helper's own comm name; a foreground process still running
+    /// it is the forked child before exec, not a user command.
+    self_name: [16]u8 = undefined,
+    self_name_len: usize = 0,
+
+    fn init(master: posix.fd_t) ForegroundTracker {
+        var self: ForegroundTracker = .{ .master = master };
+        if (readComm(linux.getpid(), &self.self_name)) |name| self.self_name_len = name.len;
+        return self;
+    }
+
+    fn check(self: *ForegroundTracker) void {
+        var pgrp: i32 = 0;
+        const rc = linux.tcgetpgrp(self.master, &pgrp);
+        if (linux.E.init(rc) != .SUCCESS) return;
+        if (pgrp <= 0 or pgrp == self.last_pgrp) return;
+
+        var name_buf: [256]u8 = undefined;
+        const name = readComm(pgrp, &name_buf) orelse return;
+        // The forked child keeps the helper's comm until it execs the
+        // user's command; reporting it would title the tab with the
+        // helper. last_pgrp stays unset so the next poll retries.
+        if (std.mem.eql(u8, name, self.self_name[0..self.self_name_len])) return;
+        self.last_pgrp = pgrp;
+        writeFrame(posix.STDOUT_FILENO, frame_fg_name, name) catch {};
+    }
+};
+
+/// Incremental parser for the stdin frame stream. Frames can split
+/// across reads, so bytes accumulate here until a frame completes.
+const FrameParser = struct {
+    buf: [frame_header_len + max_frame_payload]u8 = undefined,
+    len: usize = 0,
+
+    fn feed(self: *FrameParser, pty: *const Pty, bytes: []const u8) !void {
+        var remaining = bytes;
+        while (remaining.len > 0) {
+            const space = self.buf.len - self.len;
+            const take = @min(space, remaining.len);
+            @memcpy(self.buf[self.len..][0..take], remaining[0..take]);
+            self.len += take;
+            remaining = remaining[take..];
+            try self.drain(pty);
+        }
+    }
+
+    fn drain(self: *FrameParser, pty: *const Pty) !void {
+        var start: usize = 0;
+        while (self.len - start >= frame_header_len) {
+            const header = self.buf[start..][0..frame_header_len];
+            const payload_len = std.mem.readInt(u16, header[1..3], .little);
+            if (self.len - start < frame_header_len + payload_len) break;
+
+            const payload = self.buf[start + frame_header_len ..][0..payload_len];
+            switch (header[0]) {
+                frame_data => try writeAll(pty.master, payload),
+                frame_resize => if (payload_len >= 8) pty.setSize(
+                    std.mem.readInt(u16, payload[0..2], .little),
+                    std.mem.readInt(u16, payload[2..4], .little),
+                    std.mem.readInt(u16, payload[4..6], .little),
+                    std.mem.readInt(u16, payload[6..8], .little),
+                ),
+                frame_hangup => return error.Hangup,
+                else => {}, // Unknown type: skip for forward compatibility.
+            }
+            start += frame_header_len + payload_len;
+        }
+
+        if (start > 0) {
+            std.mem.copyForwards(u8, self.buf[0 .. self.len - start], self.buf[start..self.len]);
+            self.len -= start;
+        }
+    }
+};
+
+pub fn main() void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const alloc = arena.allocator();
+
+    const args = parseArgs();
+    const pty = Pty.open(args.cols, args.rows);
+    const child = spawnChild(&pty, args, alloc);
+
+    var parser: FrameParser = .{};
+    var fg = ForegroundTracker.init(pty.master);
+    var buf: [64 * 1024]u8 = undefined;
+
+    // A broken stdout means the Windows side is gone; that surfaces as
+    // an EPIPE from writeAll rather than a fatal SIGPIPE.
+    var sa: posix.Sigaction = .{
+        .handler = .{ .handler = posix.SIG.IGN },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    posix.sigaction(posix.SIG.PIPE, &sa, null);
+
+    // stdin EOF only ends the input side: the child keeps running and
+    // its remaining output still matters, so the pty stays polled (the
+    // stdin entry is parked at fd -1, which poll ignores). stdout is
+    // watched with no events so its POLLERR still reports the Windows
+    // side tearing the pipes down, e.g. by killing wsl.exe.
+    var fds = [_]posix.pollfd{
+        .{ .fd = pty.master, .events = posix.POLL.IN, .revents = 0 },
+        .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
+        .{ .fd = posix.STDOUT_FILENO, .events = 0, .revents = 0 },
+    };
+
+    relay: while (true) {
+        // The timeout doubles as the foreground-name poll cadence.
+        _ = posix.poll(&fds, 500) catch |err| switch (err) {
+            error.SystemResources => continue,
+            else => break :relay,
+        };
+        fg.check();
+
+        if (fds[2].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0) break :relay;
+
+        // Drain the pty first so pending output survives child exit.
+        if (fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR) != 0) {
+            while (true) {
+                const n = posix.read(pty.master, &buf) catch break :relay;
+                if (n == 0) break :relay;
+                writeDataFrames(posix.STDOUT_FILENO, buf[0..n]) catch break :relay;
+                if (n < buf.len) break;
+            }
+        }
+
+        if (fds[1].fd >= 0 and fds[1].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR) != 0) {
+            const n = posix.read(posix.STDIN_FILENO, &buf) catch 0;
+            if (n == 0) {
+                fds[1].fd = -1;
+            } else {
+                parser.feed(&pty, buf[0..n]) catch break :relay;
+            }
+        }
+    }
+
+    // Closing the master hangs up the child's terminal if it is still
+    // alive, so the waitpid below cannot block forever.
+    posix.close(pty.master);
+    const res = posix.waitpid(child, 0);
+    if (posix.W.IFEXITED(res.status)) posix.exit(posix.W.EXITSTATUS(res.status));
+    if (posix.W.IFSIGNALED(res.status)) posix.exit(128 +| @as(u8, @truncate(posix.W.TERMSIG(res.status))));
+    posix.exit(1);
+}
