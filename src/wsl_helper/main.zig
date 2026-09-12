@@ -235,25 +235,45 @@ fn writeDataFrames(fd: posix.fd_t, bytes: []const u8) !void {
 /// Reports the foreground process's comm name on stdout when it
 /// changes. The host shows it in the tab title; a Windows-side pid
 /// lookup cannot see into the distro, so the name is resolved here.
+/// The comm (short name) of a process, read from /proc.
+fn readComm(pid: i32, buf: []u8) ?[]const u8 {
+    var path_buf: [64:0]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
+    const fd = posix.openZ(path, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer posix.close(fd);
+    const n = posix.read(fd, buf) catch return null;
+    const name = std.mem.trimRight(u8, buf[0..n], "\n");
+    if (name.len == 0) return null;
+    return name;
+}
+
 const ForegroundTracker = struct {
     master: posix.fd_t,
     last_pgrp: i32 = 0,
+    /// The helper's own comm name; a foreground process still running
+    /// it is the forked child before exec, not a user command.
+    self_name: [16]u8 = undefined,
+    self_name_len: usize = 0,
+
+    fn init(master: posix.fd_t) ForegroundTracker {
+        var self: ForegroundTracker = .{ .master = master };
+        if (readComm(linux.getpid(), &self.self_name)) |name| self.self_name_len = name.len;
+        return self;
+    }
 
     fn check(self: *ForegroundTracker) void {
         var pgrp: i32 = 0;
         const rc = linux.tcgetpgrp(self.master, &pgrp);
         if (linux.E.init(rc) != .SUCCESS) return;
         if (pgrp <= 0 or pgrp == self.last_pgrp) return;
-        self.last_pgrp = pgrp;
 
-        var path_buf: [64:0]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pgrp}) catch return;
-        const fd = posix.openZ(path, .{ .ACCMODE = .RDONLY }, 0) catch return;
-        defer posix.close(fd);
         var name_buf: [256]u8 = undefined;
-        const n = posix.read(fd, &name_buf) catch return;
-        const name = std.mem.trimRight(u8, name_buf[0..n], "\n");
-        if (name.len == 0) return;
+        const name = readComm(pgrp, &name_buf) orelse return;
+        // The forked child keeps the helper's comm until it execs the
+        // user's command; reporting it would title the tab with the
+        // helper. last_pgrp stays unset so the next poll retries.
+        if (std.mem.eql(u8, name, self.self_name[0..self.self_name_len])) return;
+        self.last_pgrp = pgrp;
         writeFrame(posix.STDOUT_FILENO, frame_fg_name, name) catch {};
     }
 };
@@ -314,7 +334,7 @@ pub fn main() void {
     const child = spawnChild(&pty, args, alloc);
 
     var parser: FrameParser = .{};
-    var fg: ForegroundTracker = .{ .master = pty.master };
+    var fg = ForegroundTracker.init(pty.master);
     var buf: [64 * 1024]u8 = undefined;
 
     // A broken stdout means the Windows side is gone; that surfaces as
