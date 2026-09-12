@@ -1,11 +1,10 @@
 //! Process-wide cache of the decoded background image.
 //!
-//! Decoding a large PNG takes hundreds of milliseconds, and every
-//! surface used to decode the configured image itself, on the thread
-//! that creates the surface — the UI thread in libghostty hosts, which
-//! froze for that long on every new tab. One decode is shared instead;
-//! callers take a copy they own, because Image frees its pending data
-//! after the GPU upload.
+//! Decoding a large PNG takes hundreds of milliseconds and yields tens
+//! of megabytes of pixels. Every surface used to decode the configured
+//! image itself, so one decode is shared instead and lent out under the
+//! cache lock: the GPU upload copies the pixels, so a borrower needs no
+//! copy of its own and releases the view right after.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const wuffs = @import("wuffs");
@@ -13,11 +12,17 @@ const FileType = @import("../file_type.zig").FileType;
 
 const log = std.log.scoped(.bg_image_cache);
 
-pub const Decoded = struct {
+/// A borrowed view of the decoded image. The cache lock is held until
+/// `release`, so keep it only for the upload.
+pub const View = struct {
     width: u32,
     height: u32,
-    /// Owned by the caller.
-    data: []u8,
+    data: []const u8,
+
+    pub fn release(self: View) void {
+        _ = self;
+        mutex.unlock();
+    }
 };
 
 const Entry = struct {
@@ -45,12 +50,12 @@ const Entry = struct {
 var mutex: std.Thread.Mutex = .{};
 var entry: ?Entry = null;
 
-/// Load the image at `path`, decoding it only when the cache does not
-/// already hold this exact file. The returned data is a copy the
-/// caller owns. Open, read and file-type problems are logged here and
-/// reported as named errors so the caller can skip the image; decode
-/// errors propagate as they are.
-pub fn load(alloc: Allocator, path: []const u8) !Decoded {
+/// Borrow the decoded image at `path`, decoding it only when the cache
+/// does not already hold this exact file. Open, read and file-type
+/// problems are logged here and reported as named errors so the caller
+/// can skip the image; decode errors propagate as they are. On success
+/// the cache lock is held until the view is released.
+pub fn acquire(alloc: Allocator, path: []const u8) !View {
     var file = std.fs.openFileAbsolute(path, .{}) catch |err| {
         log.warn("error opening background image file \"{s}\": {}", .{ path, err });
         return error.OpenFailed;
@@ -61,10 +66,8 @@ pub fn load(alloc: Allocator, path: []const u8) !Decoded {
         return error.ReadFailed;
     };
 
-    // Held across the decode on purpose: concurrent surface inits then
-    // wait for the one decode instead of each running their own.
     mutex.lock();
-    defer mutex.unlock();
+    errdefer mutex.unlock();
 
     if (entry) |*e| {
         if (!e.matches(path, stat)) {
@@ -75,11 +78,7 @@ pub fn load(alloc: Allocator, path: []const u8) !Decoded {
     if (entry == null) entry = try decode(alloc, file, path, stat);
 
     const e = entry.?;
-    return .{
-        .width = e.width,
-        .height = e.height,
-        .data = try alloc.dupe(u8, e.data),
-    };
+    return .{ .width = e.width, .height = e.height, .data = e.data };
 }
 
 fn decode(alloc: Allocator, file: std.fs.File, path: []const u8, stat: std.fs.File.Stat) !Entry {
