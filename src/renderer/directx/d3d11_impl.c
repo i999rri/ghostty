@@ -719,9 +719,12 @@ void dx_resize(DxDevice* dev, uint32_t width, uint32_t height) {
 
         ID3D11DeviceContext_Flush(dev->context);
 
-        // Preserve FRAME_LATENCY_WAITABLE_OBJECT flag if it was set —
-        // ResizeBuffers strips flags unless we pass them explicitly.
-        UINT flags = dev->frame_latency_waitable ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0;
+        // ResizeBuffers must repeat the swap chain's creation flags: DXGI
+        // rejects a call that adds or removes FRAME_LATENCY_WAITABLE_OBJECT.
+        // Read them from the chain itself; whether we hold a waitable
+        // handle is a different fact and can disagree.
+        DXGI_SWAP_CHAIN_DESC desc = {0};
+        UINT flags = SUCCEEDED(IDXGISwapChain_GetDesc(dev->swap_chain, &desc)) ? desc.Flags : 0;
         HRESULT hr = IDXGISwapChain_ResizeBuffers(dev->swap_chain, 0, width, height, DXGI_FORMAT_UNKNOWN, flags);
         if (SUCCEEDED(hr)) {
             dx_create_backbuffer_rtv(dev);
