@@ -1761,14 +1761,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.swap_chain.releaseFrame();
         }
 
-        /// Call this any time the background image path changes.
+        /// Call this any time the background image path changes. Loading
+        /// itself happens in uploadBackgroundImage on the renderer thread,
+        /// off the thread that creates or reconfigures the surface: the
+        /// decode is shared through bg_image_cache, but even the GPU
+        /// upload of a large image is too slow to pay while the UI waits.
         ///
         /// Caller must hold the draw mutex.
-        /// Schedule the background image for the renderer thread. Loading
-        /// happens in uploadBackgroundImage, off the thread that creates
-        /// or reconfigures the surface: the decode is shared through
-        /// bg_image_cache, but even the GPU upload of a large image is
-        /// too slow to pay while the UI waits on us.
         fn prepBackgroundImage(self: *Self) !void {
             if (self.config.bg_image != null) {
                 self.bg_image_reload = true;
