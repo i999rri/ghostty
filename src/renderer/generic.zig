@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
-const wuffs = @import("wuffs");
 const apprt = @import("../apprt.zig");
 const configpkg = @import("../config.zig");
 const font = @import("../font/main.zig");
@@ -19,6 +18,7 @@ const isCovering = cellpkg.isCovering;
 const rowNeverExtendBg = @import("row.zig").neverExtendBg;
 const Overlay = @import("Overlay.zig");
 const imagepkg = @import("image.zig");
+const bg_image_cache = @import("bg_image_cache.zig");
 const ImageState = imagepkg.State;
 const shadertoy = @import("shadertoy.zig");
 const assert = @import("../quirks.zig").inlineAssert;
@@ -28,8 +28,6 @@ const Terminal = terminal.Terminal;
 const Health = renderer.Health;
 
 const getConstraint = @import("../font/nerd_font_attributes.zig").getConstraint;
-
-const FileType = @import("../file_type.zig").FileType;
 
 const macos = switch (builtin.os.tag) {
     .macos => @import("macos"),
@@ -1770,63 +1768,22 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .required, .optional => |slice| slice,
                 };
 
-                // Open the file
-                var file = std.fs.openFileAbsolute(path, .{}) catch |err| {
-                    log.warn(
-                        "error opening background image file \"{s}\": {}",
-                        .{ path, err },
-                    );
-                    break :load_background;
-                };
-                defer file.close();
-
-                // Read it
-                const contents = file.readToEndAlloc(
-                    self.alloc,
-                    std.math.maxInt(u32), // Max size of 4 GiB, for now.
-                ) catch |err| {
-                    log.warn(
-                        "error reading background image file \"{s}\": {}",
-                        .{ path, err },
-                    );
-                    break :load_background;
-                };
-                defer self.alloc.free(contents);
-
-                // Figure out what type it probably is.
-                const file_type = switch (FileType.detect(contents)) {
-                    .unknown => FileType.guessFromExtension(
-                        std.fs.path.extension(path),
-                    ),
-                    else => |t| t,
-                };
-
-                // Decode it if we know how.
-                const image_data = switch (file_type) {
-                    .png => try wuffs.png.decode(self.alloc, contents),
-                    .jpeg => try wuffs.jpeg.decode(self.alloc, contents),
-                    .unknown => {
-                        log.warn(
-                            "Cannot determine file type for background image file \"{s}\"!",
-                            .{path},
-                        );
-                        break :load_background;
-                    },
-                    else => |f| {
-                        log.warn(
-                            "Unsupported file type {} for background image file \"{s}\"!",
-                            .{ f, path },
-                        );
-                        break :load_background;
-                    },
+                // Decoding is shared across surfaces; the copy is ours.
+                const decoded = bg_image_cache.load(self.alloc, path) catch |err| switch (err) {
+                    error.OpenFailed,
+                    error.ReadFailed,
+                    error.UnknownFileType,
+                    error.UnsupportedFileType,
+                    => break :load_background,
+                    else => |e| return e,
                 };
 
                 const image: imagepkg.Image = .{
                     .pending = .{
-                        .width = image_data.width,
-                        .height = image_data.height,
+                        .width = decoded.width,
+                        .height = decoded.height,
                         .pixel_format = .rgba,
-                        .data = image_data.data.ptr,
+                        .data = decoded.data.ptr,
                     },
                 };
 
