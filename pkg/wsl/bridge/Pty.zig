@@ -19,14 +19,9 @@ const Pty = @This();
 const std = @import("std");
 const windows = std.os.windows;
 const w32 = @import("windows.zig");
+const protocol = @import("protocol.zig");
 
 const log = std.log.scoped(.wsl_bridge);
-
-const frame_data: u8 = 0;
-const frame_resize: u8 = 1;
-const frame_hangup: u8 = 2;
-const frame_fg_name: u8 = 3;
-const max_frame_payload = std.math.maxInt(u16);
 
 /// Terminal size, laid out like the POSIX struct so termio's pty size
 /// literals coerce to it.
@@ -281,7 +276,7 @@ pub fn deinit(self: *Pty) void {
     // Orderly teardown for a still-alive session: the helper turns
     // this frame into a SIGHUP for its child.
     self.write_mutex.lock();
-    writeAll(self.helper_in, &.{ frame_hangup, 0, 0 }) catch {};
+    writeAll(self.helper_in, &protocol.header(.hangup, 0)) catch {};
     self.write_mutex.unlock();
 
     // Closing the termio write side unblocks the input pump's read.
@@ -313,13 +308,13 @@ pub fn getSize(self: Pty) winsize {
 pub const SetSizeError = error{ResizeFailed};
 
 pub fn setSize(self: *Pty, size: winsize) SetSizeError!void {
-    var frame: [11]u8 = undefined;
-    frame[0] = frame_resize;
-    std.mem.writeInt(u16, frame[1..3], 8, .little);
-    std.mem.writeInt(u16, frame[3..5], size.ws_col, .little);
-    std.mem.writeInt(u16, frame[5..7], size.ws_row, .little);
-    std.mem.writeInt(u16, frame[7..9], size.ws_xpixel, .little);
-    std.mem.writeInt(u16, frame[9..11], size.ws_ypixel, .little);
+    const resize: protocol.Resize = .{
+        .cols = size.ws_col,
+        .rows = size.ws_row,
+        .xpixel = size.ws_xpixel,
+        .ypixel = size.ws_ypixel,
+    };
+    const frame = protocol.header(.resize, protocol.Resize.payload_len) ++ resize.encode();
 
     self.write_mutex.lock();
     defer self.write_mutex.unlock();
@@ -330,12 +325,32 @@ pub fn setSize(self: *Pty, size: winsize) SetSizeError!void {
 /// Deframes wsl.exe's stdout: pty data goes to out_write for
 /// termio, foreground-name reports go to the fg_name slot.
 fn outPumpThread(self: *Pty) void {
-    var parser: OutParser = .{};
+    var parser: protocol.Parser = .{};
     var buf: [64 * 1024]u8 = undefined;
-    while (true) {
+    read: while (true) {
         const n = windows.ReadFile(self.wsl_out, &buf, null) catch break;
         if (n == 0) break;
-        parser.feed(self, buf[0..n]) catch break;
+
+        var remaining: []const u8 = buf[0..n];
+        while (remaining.len > 0) {
+            remaining = remaining[parser.push(remaining)..];
+            while (parser.next()) |frame| self.handleFrame(frame) catch break :read;
+        }
+    }
+}
+
+/// Apply one stdout frame from the helper.
+fn handleFrame(self: *Pty, frame: protocol.Frame) !void {
+    switch (frame.kind) {
+        .data => try self.writeOut(frame.payload),
+        .fg_name => {
+            self.fg_mutex.lock();
+            defer self.fg_mutex.unlock();
+            const n = @min(self.fg_name.len, frame.payload.len);
+            @memcpy(self.fg_name[0..n], frame.payload[0..n]);
+            self.fg_name_len = n;
+        },
+        else => {}, // Unknown type: skip for forward compatibility.
     }
 }
 
@@ -357,53 +372,6 @@ fn writeOut(self: *Pty, bytes: []const u8) !void {
     try writeAll(self.out_write, bytes);
 }
 
-/// Incremental parser for the helper's stdout frame stream; frames
-/// can split across reads. Mirror of the helper's stdin parser.
-const OutParser = struct {
-    buf: [3 + max_frame_payload]u8 = undefined,
-    len: usize = 0,
-
-    fn feed(self: *OutParser, bridge: *Pty, bytes: []const u8) !void {
-        var remaining = bytes;
-        while (remaining.len > 0) {
-            const space = self.buf.len - self.len;
-            const take = @min(space, remaining.len);
-            @memcpy(self.buf[self.len..][0..take], remaining[0..take]);
-            self.len += take;
-            remaining = remaining[take..];
-            try self.drain(bridge);
-        }
-    }
-
-    fn drain(self: *OutParser, bridge: *Pty) !void {
-        var start: usize = 0;
-        while (self.len - start >= 3) {
-            const header = self.buf[start..][0..3];
-            const payload_len = std.mem.readInt(u16, header[1..3], .little);
-            if (self.len - start < 3 + payload_len) break;
-
-            const payload = self.buf[start + 3 ..][0..payload_len];
-            switch (header[0]) {
-                frame_data => try bridge.writeOut(payload),
-                frame_fg_name => {
-                    bridge.fg_mutex.lock();
-                    defer bridge.fg_mutex.unlock();
-                    const n = @min(bridge.fg_name.len, payload.len);
-                    @memcpy(bridge.fg_name[0..n], payload[0..n]);
-                    bridge.fg_name_len = n;
-                },
-                else => {}, // Unknown type: skip for forward compatibility.
-            }
-            start += 3 + payload_len;
-        }
-
-        if (start > 0) {
-            std.mem.copyForwards(u8, self.buf[0 .. self.len - start], self.buf[start..self.len]);
-            self.len -= start;
-        }
-    }
-};
-
 fn pumpThread(self: *Pty) void {
     var buf: [32 * 1024]u8 = undefined;
     pump: while (true) {
@@ -412,14 +380,11 @@ fn pumpThread(self: *Pty) void {
 
         var remaining: []const u8 = buf[0..n];
         while (remaining.len > 0) {
-            const take = @min(remaining.len, max_frame_payload);
-            var header: [3]u8 = undefined;
-            header[0] = frame_data;
-            std.mem.writeInt(u16, header[1..3], @intCast(take), .little);
+            const take = @min(remaining.len, protocol.max_payload);
 
             self.write_mutex.lock();
             defer self.write_mutex.unlock();
-            writeAll(self.helper_in, &header) catch break :pump;
+            writeAll(self.helper_in, &protocol.header(.data, take)) catch break :pump;
             writeAll(self.helper_in, remaining[0..take]) catch break :pump;
             remaining = remaining[take..];
         }

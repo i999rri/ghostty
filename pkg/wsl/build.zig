@@ -26,4 +26,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(helper);
+
+    // The protocol is the part both halves share and the only part
+    // that builds on any host, so it is what the tests cover.
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bridge/protocol.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(tests).step);
 }

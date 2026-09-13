@@ -7,35 +7,13 @@
 //! the Windows terminal a byte-exact VT stream, bypassing ConPTY's
 //! re-rendering entirely.
 //!
-//! Wire protocol: both directions carry frames — stdin because resize
-//! has no side channel over a pipe, stdout because out-of-band reports
-//! (the foreground process name) must not pollute the pty byte stream:
-//!
-//!   [type: u8][len: u16 LE][payload: len bytes]
-//!
-//! stdin (host -> helper):
-//!   type 0 = data:    payload is written to the pty as-is
-//!   type 1 = resize:  payload is 4x u16 LE (cols, rows, xpixel, ypixel)
-//!   type 2 = hangup:  no payload; close the pty (SIGHUP) and exit
-//!
-//! stdout (helper -> host):
-//!   type 0 = data:    raw pty output, byte-exact inside the payload
-//!   type 3 = fg-name: the foreground process's comm name
-//!
-//! stderr stays plain text for diagnostics. Unknown frame types are
-//! skipped so the protocol can grow without breaking older helpers.
+//! Both stdio directions carry the frames described in protocol.zig;
+//! stderr stays plain text for diagnostics.
 
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
-
-const frame_data: u8 = 0;
-const frame_resize: u8 = 1;
-const frame_hangup: u8 = 2;
-const frame_fg_name: u8 = 3;
-
-const frame_header_len = 3;
-const max_frame_payload = std.math.maxInt(u16);
+const protocol = @import("protocol.zig");
 
 const Args = struct {
     cols: u16 = 80,
@@ -215,19 +193,16 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
     }
 }
 
-fn writeFrame(fd: posix.fd_t, kind: u8, payload: []const u8) !void {
-    var header: [frame_header_len]u8 = undefined;
-    header[0] = kind;
-    std.mem.writeInt(u16, header[1..3], @intCast(payload.len), .little);
-    try writeAll(fd, &header);
+fn writeFrame(fd: posix.fd_t, kind: protocol.Type, payload: []const u8) !void {
+    try writeAll(fd, &protocol.header(kind, payload.len));
     try writeAll(fd, payload);
 }
 
 fn writeDataFrames(fd: posix.fd_t, bytes: []const u8) !void {
     var remaining = bytes;
     while (remaining.len > 0) {
-        const take = @min(remaining.len, max_frame_payload);
-        try writeFrame(fd, frame_data, remaining[0..take]);
+        const take = @min(remaining.len, protocol.max_payload);
+        try writeFrame(fd, .data, remaining[0..take]);
         remaining = remaining[take..];
     }
 }
@@ -274,56 +249,21 @@ const ForegroundTracker = struct {
         // helper. last_pgrp stays unset so the next poll retries.
         if (std.mem.eql(u8, name, self.self_name[0..self.self_name_len])) return;
         self.last_pgrp = pgrp;
-        writeFrame(posix.STDOUT_FILENO, frame_fg_name, name) catch {};
+        writeFrame(posix.STDOUT_FILENO, .fg_name, name) catch {};
     }
 };
 
-/// Incremental parser for the stdin frame stream. Frames can split
-/// across reads, so bytes accumulate here until a frame completes.
-const FrameParser = struct {
-    buf: [frame_header_len + max_frame_payload]u8 = undefined,
-    len: usize = 0,
-
-    fn feed(self: *FrameParser, pty: *const Pty, bytes: []const u8) !void {
-        var remaining = bytes;
-        while (remaining.len > 0) {
-            const space = self.buf.len - self.len;
-            const take = @min(space, remaining.len);
-            @memcpy(self.buf[self.len..][0..take], remaining[0..take]);
-            self.len += take;
-            remaining = remaining[take..];
-            try self.drain(pty);
-        }
+/// Apply one stdin frame to the pty.
+fn handleFrame(pty: *const Pty, frame: protocol.Frame) !void {
+    switch (frame.kind) {
+        .data => try writeAll(pty.master, frame.payload),
+        .resize => if (protocol.Resize.decode(frame.payload)) |size| {
+            pty.setSize(size.cols, size.rows, size.xpixel, size.ypixel);
+        },
+        .hangup => return error.Hangup,
+        else => {}, // Unknown type: skip for forward compatibility.
     }
-
-    fn drain(self: *FrameParser, pty: *const Pty) !void {
-        var start: usize = 0;
-        while (self.len - start >= frame_header_len) {
-            const header = self.buf[start..][0..frame_header_len];
-            const payload_len = std.mem.readInt(u16, header[1..3], .little);
-            if (self.len - start < frame_header_len + payload_len) break;
-
-            const payload = self.buf[start + frame_header_len ..][0..payload_len];
-            switch (header[0]) {
-                frame_data => try writeAll(pty.master, payload),
-                frame_resize => if (payload_len >= 8) pty.setSize(
-                    std.mem.readInt(u16, payload[0..2], .little),
-                    std.mem.readInt(u16, payload[2..4], .little),
-                    std.mem.readInt(u16, payload[4..6], .little),
-                    std.mem.readInt(u16, payload[6..8], .little),
-                ),
-                frame_hangup => return error.Hangup,
-                else => {}, // Unknown type: skip for forward compatibility.
-            }
-            start += frame_header_len + payload_len;
-        }
-
-        if (start > 0) {
-            std.mem.copyForwards(u8, self.buf[0 .. self.len - start], self.buf[start..self.len]);
-            self.len -= start;
-        }
-    }
-};
+}
 
 pub fn main() void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -333,7 +273,7 @@ pub fn main() void {
     const pty = Pty.open(args.cols, args.rows);
     const child = spawnChild(&pty, args, alloc);
 
-    var parser: FrameParser = .{};
+    var parser: protocol.Parser = .{};
     var fg = ForegroundTracker.init(pty.master);
     var buf: [64 * 1024]u8 = undefined;
 
@@ -382,7 +322,11 @@ pub fn main() void {
             if (n == 0) {
                 fds[1].fd = -1;
             } else {
-                parser.feed(&pty, buf[0..n]) catch break :relay;
+                var remaining: []const u8 = buf[0..n];
+                while (remaining.len > 0) {
+                    remaining = remaining[parser.push(remaining)..];
+                    while (parser.next()) |frame| handleFrame(&pty, frame) catch break :relay;
+                }
             }
         }
     }
