@@ -8,6 +8,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const wuffs = @import("wuffs");
+const global = @import("../global.zig");
+const compat_file = @import("../lib/compat/file.zig");
 const FileType = @import("../file_type.zig").FileType;
 
 const log = std.log.scoped(.bg_image_cache);
@@ -21,7 +23,7 @@ pub const View = struct {
 
     pub fn release(self: View) void {
         _ = self;
-        mutex.unlock();
+        mutex.unlock(global.io());
     }
 };
 
@@ -29,7 +31,7 @@ const Entry = struct {
     alloc: Allocator,
     path: []u8,
     size: u64,
-    mtime: i128,
+    mtime: std.Io.Timestamp,
     width: u32,
     height: u32,
     data: []u8,
@@ -40,14 +42,14 @@ const Entry = struct {
     }
 
     /// The same file, unchanged since it was decoded.
-    fn matches(self: Entry, path: []const u8, stat: std.fs.File.Stat) bool {
+    fn matches(self: Entry, path: []const u8, stat: std.Io.File.Stat) bool {
         return std.mem.eql(u8, self.path, path) and
             self.size == stat.size and
-            self.mtime == stat.mtime;
+            std.meta.eql(self.mtime, stat.mtime);
     }
 };
 
-var mutex: std.Thread.Mutex = .{};
+var mutex: std.Io.Mutex = .init;
 var entry: ?Entry = null;
 
 /// Borrow the decoded image at `path`, decoding it only when the cache
@@ -56,18 +58,19 @@ var entry: ?Entry = null;
 /// can skip the image; decode errors propagate as they are. On success
 /// the cache lock is held until the view is released.
 pub fn acquire(alloc: Allocator, path: []const u8) !View {
-    var file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+    const io = global.io();
+    var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch |err| {
         log.warn("error opening background image file \"{s}\": {}", .{ path, err });
         return error.OpenFailed;
     };
-    defer file.close();
-    const stat = file.stat() catch |err| {
+    defer file.close(io);
+    const stat = file.stat(io) catch |err| {
         log.warn("error reading background image file \"{s}\": {}", .{ path, err });
         return error.ReadFailed;
     };
 
-    mutex.lock();
-    errdefer mutex.unlock();
+    mutex.lockUncancelable(io);
+    errdefer mutex.unlock(io);
 
     if (entry) |*e| {
         if (!e.matches(path, stat)) {
@@ -81,8 +84,9 @@ pub fn acquire(alloc: Allocator, path: []const u8) !View {
     return .{ .width = e.width, .height = e.height, .data = e.data };
 }
 
-fn decode(alloc: Allocator, file: std.fs.File, path: []const u8, stat: std.fs.File.Stat) !Entry {
-    const contents = file.readToEndAlloc(
+fn decode(alloc: Allocator, file: std.Io.File, path: []const u8, stat: std.Io.File.Stat) !Entry {
+    const contents = compat_file.readToEndAlloc(
+        file,
         alloc,
         std.math.maxInt(u32), // Max size of 4 GiB, for now.
     ) catch |err| {

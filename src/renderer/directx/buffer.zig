@@ -267,18 +267,22 @@ test "planSync: empty data is a no-op" {
 
 test "planSync: first call (no buffer) on .array target allocates 2x" {
     const plan = planSync(u32, .{ .target = .array }, false, 0, 5);
-    try std.testing.expectEqual(SyncPlan{ .create_then_update = .{
-        .alloc_len = 10,
-        .alloc_size = 40, // 10 * 4 bytes
-        .byte_size = 20, // 5 * 4 bytes
-    } }, plan);
+    try std.testing.expectEqual(SyncPlan{
+        .create_then_update = .{
+            .alloc_len = 10,
+            .alloc_size = 40, // 10 * 4 bytes
+            .byte_size = 20, // 5 * 4 bytes
+        },
+    }, plan);
 }
 
 test "planSync: existing buffer with room → update_only (no recreate)" {
     const plan = planSync(u32, .{ .target = .array }, true, 100, 50);
-    try std.testing.expectEqual(SyncPlan{ .update_only = .{
-        .byte_size = 200, // 50 * 4 bytes
-    } }, plan);
+    try std.testing.expectEqual(SyncPlan{
+        .update_only = .{
+            .byte_size = 200, // 50 * 4 bytes
+        },
+    }, plan);
 }
 
 test "planSync: data fits exactly → still update_only (boundary)" {

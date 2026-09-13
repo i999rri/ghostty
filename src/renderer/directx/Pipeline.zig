@@ -1,4 +1,5 @@
 const std = @import("std");
+const global = @import("../../global.zig");
 const DirectX = @import("../DirectX.zig");
 const dx = DirectX.dx;
 
@@ -59,7 +60,7 @@ const DeviceHandle = struct {
     handle: ?*dx.DxPipeline = null,
 };
 
-var pipeline_mutex: std.Thread.Mutex = .{};
+var pipeline_mutex: std.Io.Mutex = .init;
 
 var device_handles: [MAX_SOURCES][MAX_DEVICES]DeviceHandle = [_][MAX_DEVICES]DeviceHandle{
     [_]DeviceHandle{.{}} ** MAX_DEVICES,
@@ -82,8 +83,8 @@ var blob_cache: [MAX_SOURCES]BlobCache = [_]BlobCache{.{}} ** MAX_SOURCES;
 /// This must be called after storeSource so self.id is set.
 pub fn seedBlobCache(self: *const Self, vs_cso: []const u8, ps_cso: []const u8) void {
     if (self.id == 0 or self.id >= MAX_SOURCES) return;
-    pipeline_mutex.lock();
-    defer pipeline_mutex.unlock();
+    pipeline_mutex.lockUncancelable(global.io());
+    defer pipeline_mutex.unlock(global.io());
     const cache = &blob_cache[self.id];
     cache.vs_bytecode = vs_cso.ptr;
     cache.vs_size = @intCast(vs_cso.len);
@@ -107,8 +108,8 @@ pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
 
 /// Register HLSL source. Deduplicates by pointer identity.
 pub fn storeSource(self: *Self, vs_source: []const u8, ps_source: []const u8) void {
-    pipeline_mutex.lock();
-    defer pipeline_mutex.unlock();
+    pipeline_mutex.lockUncancelable(global.io());
+    defer pipeline_mutex.unlock(global.io());
     // Check if already registered (comptime pointers are stable).
     var i: u8 = 1;
     while (i < next_id) : (i += 1) {
@@ -134,8 +135,8 @@ pub fn getHandle(self: Self, device: ?*dx.DxDevice) ?*dx.DxPipeline {
     if (self.id == 0 or self.id >= MAX_SOURCES) return null;
     if (device == null) return null;
 
-    pipeline_mutex.lock();
-    defer pipeline_mutex.unlock();
+    pipeline_mutex.lockUncancelable(global.io());
+    defer pipeline_mutex.unlock(global.io());
 
     // Look up existing handle for this device.
     const slots = &device_handles[self.id];
@@ -182,8 +183,8 @@ pub fn deinit(self: *const Self) void {
 /// from the previous lifetime.
 pub fn invalidateDevice(device: ?*dx.DxDevice) void {
     if (device == null) return;
-    pipeline_mutex.lock();
-    defer pipeline_mutex.unlock();
+    pipeline_mutex.lockUncancelable(global.io());
+    defer pipeline_mutex.unlock(global.io());
     var i: usize = 0;
     while (i < MAX_SOURCES) : (i += 1) {
         for (&device_handles[i]) |*slot| {
