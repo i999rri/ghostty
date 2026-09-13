@@ -163,8 +163,21 @@ static void dx_swap_chain_set_scrgb(IDXGISwapChain1* swap_chain1) {
         OutputDebugStringA("D3D11: IDXGISwapChain3 not available; swap chain colorspace untagged\n");
         return;
     }
+    // On some adapters (seen on NVIDIA) DXGI probes the chain inside
+    // CheckColorSpaceSupport with an internal ResizeBuffers that the
+    // debug layer then rejects as "Cannot add or remove the
+    // DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT flag". The
+    // message is DXGI's own, not a call of ours, and the chain is
+    // unaffected. The lines around the probe make that visible in the
+    // debug output.
+    OutputDebugStringA("D3D11: CheckColorSpaceSupport(scRGB) begin; a DXGI ResizeBuffers error before the result line is emitted inside DXGI\n");
     UINT support = 0;
     HRESULT hr = sc3->lpVtbl->CheckColorSpaceSupport(sc3, DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709_LOCAL, &support);
+    {
+        char buf[128];
+        sprintf(buf, "D3D11: CheckColorSpaceSupport(scRGB) end hr=0x%08X support=0x%x\n", (unsigned)hr, support);
+        OutputDebugStringA(buf);
+    }
     // Bit 0 of `support` is DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.
     if (SUCCEEDED(hr) && (support & 1u)) {
         hr = sc3->lpVtbl->SetColorSpace1(sc3, DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709_LOCAL);
