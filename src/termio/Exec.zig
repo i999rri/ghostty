@@ -23,8 +23,14 @@ const termio = @import("../termio.zig");
 const Command = @import("../Command.zig");
 const SegmentedPool = @import("../datastruct/main.zig").SegmentedPool;
 const ptypkg = @import("../pty.zig");
-const wslbridge = @import("../wsl_bridge.zig");
 const Pty = ptypkg.Pty;
+
+/// The WSL pty bridge (pkg/wsl) exists only on Windows; elsewhere the
+/// type is empty so the field can still be declared.
+const WslBridgePty = switch (builtin.os.tag) {
+    .windows => @import("wsl").bridge.Pty,
+    else => struct {},
+};
 const EnvMap = std.process.EnvMap;
 const PasswdEntry = internal_os.passwd.Entry;
 const windows = internal_os.windows;
@@ -599,7 +605,7 @@ const Subprocess = struct {
     /// Set when the surface opted into the WSL pty bridge; start()
     /// then goes through startWslBridge instead of ConPTY.
     wsl_bridge_cfg: ?WslBridgeConfig = null,
-    bridge: ?wslbridge.WslBridgePty = null,
+    bridge: ?WslBridgePty = null,
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -1136,7 +1142,7 @@ const Subprocess = struct {
 
     /// Start a session through the WSL pty bridge instead of ConPTY
     /// (GhosttyWin32#206). wsl.exe runs ghostty-wsl-helper, which owns
-    /// a real Linux pty; see src/wsl_bridge.zig for the pipe layout.
+    /// a real Linux pty; see pkg/wsl/bridge/Pty.zig for the pipe layout.
     fn startWslBridge(
         self: *Subprocess,
         alloc: Allocator,
@@ -1155,7 +1161,7 @@ const Subprocess = struct {
         };
         std.mem.replaceScalar(u8, helper_path, '\\', '/');
 
-        self.bridge = try wslbridge.WslBridgePty.open(.{
+        self.bridge = try WslBridgePty.open(.{
             .ws_row = std.math.cast(u16, self.grid_size.rows) orelse std.math.maxInt(u16),
             .ws_col = std.math.cast(u16, self.grid_size.columns) orelse std.math.maxInt(u16),
             .ws_xpixel = std.math.cast(u16, self.screen_size.width) orelse std.math.maxInt(u16),
