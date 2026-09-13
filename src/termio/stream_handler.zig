@@ -1130,11 +1130,6 @@ pub const StreamHandler = struct {
             return;
         }
 
-        if (builtin.os.tag == .windows) {
-            log.warn("reportPwd unimplemented on windows", .{});
-            return;
-        }
-
         // Attempt to parse this file-style URI using options appropriate
         // for this OSC 7 context (e.g. kitty-shell-cwd expects the full,
         // unencoded path).
@@ -1186,7 +1181,19 @@ pub const StreamHandler = struct {
         var arena_alloc: std.heap.ArenaAllocator = .init(self.alloc);
         var stack_alloc = std.heap.stackFallback(1024, arena_alloc.allocator());
         defer arena_alloc.deinit();
-        const path = try uri.path.toRawMaybeAlloc(stack_alloc.get());
+        const raw_path = try uri.path.toRawMaybeAlloc(stack_alloc.get());
+
+        // Windows: a drive-letter file URI (file:///C:/foo) parses to
+        // the path "/C:/foo". Strip the leading slash so the stored
+        // pwd is a real Windows path — everything downstream (window
+        // title fallback, pwd_change surface message, working-dir
+        // inheritance) expects something the OS can use.
+        const path = if (comptime builtin.os.tag == .windows) windows: {
+            if (raw_path.len >= 3 and
+                raw_path[0] == '/' and
+                raw_path[2] == ':') break :windows raw_path[1..];
+            break :windows raw_path;
+        } else raw_path;
 
         log.debug("terminal pwd: {s}", .{path});
         try self.terminal.setPwd(path);
