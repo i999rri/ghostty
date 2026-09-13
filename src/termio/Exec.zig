@@ -943,9 +943,13 @@ const Subprocess = struct {
         assert(self.pty == null and self.process == null);
 
         // A WSL bridge session has no ConPTY at all: the pty lives
-        // inside the distro and wsl.exe is both pipe and process.
+        // inside the distro and wsl.exe is both pipe and process. A
+        // host that does not ship the in-distro binary gets the plain
+        // ConPTY session instead of a broken one.
         if (comptime builtin.os.tag == .windows) {
-            if (self.wsl_bridge_cfg) |bcfg| return try self.startWslBridge(alloc, bcfg);
+            if (self.wsl_bridge_cfg) |bcfg| {
+                if (try self.startWslBridge(alloc, bcfg)) |fds| return fds;
+            }
         }
 
         // This function is funny because on POSIX systems it can
@@ -1132,11 +1136,13 @@ const Subprocess = struct {
     /// Start a session through the WSL pty bridge instead of ConPTY
     /// (GhosttyWin32#206). wsl.exe runs ghostty-wsl-bridge, which owns
     /// a real Linux pty; see pkg/wsl/bridge/Pty.zig for the pipe layout.
+    /// Returns null, without touching any state, when the in-distro
+    /// binary is not installed so the caller can fall back to ConPTY.
     fn startWslBridge(
         self: *Subprocess,
         alloc: Allocator,
         bcfg: WslBridgeConfig,
-    ) !PtyFds {
+    ) !?PtyFds {
         const arena = self.arena.allocator();
 
         // The in-distro binary ships next to the host executable; the
@@ -1148,6 +1154,10 @@ const Subprocess = struct {
             } else |_| {}
             const exe_dir = try std.fs.selfExeDirPathAlloc(arena);
             break :helper try std.fs.path.join(arena, &.{ exe_dir, "ghostty-wsl-bridge" });
+        };
+        std.fs.cwd().access(helper_path, .{}) catch |err| {
+            log.warn("WSL bridge binary not found, running wsl under ConPTY path={s} err={}", .{ helper_path, err });
+            return null;
         };
         const size: WslBridgePty.winsize = .{
             .ws_row = std.math.cast(u16, self.grid_size.rows) orelse std.math.maxInt(u16),
