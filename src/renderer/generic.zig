@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const xev = @import("xev");
-const wuffs = @import("wuffs");
 const apprt = @import("../apprt.zig");
 const configpkg = @import("../config.zig");
 const font = @import("../font/main.zig");
@@ -19,6 +18,7 @@ const isCovering = cellpkg.isCovering;
 const rowNeverExtendBg = @import("row.zig").neverExtendBg;
 const Overlay = @import("Overlay.zig");
 const imagepkg = @import("image.zig");
+const bg_image_cache = @import("bg_image_cache.zig");
 const ImageState = imagepkg.State;
 const shadertoy = @import("shadertoy.zig");
 const assert = @import("../quirks.zig").inlineAssert;
@@ -28,8 +28,6 @@ const Terminal = terminal.Terminal;
 const Health = renderer.Health;
 
 const getConstraint = @import("../font/nerd_font_attributes.zig").getConstraint;
-
-const FileType = @import("../file_type.zig").FileType;
 
 const macos = switch (builtin.os.tag) {
     .macos => @import("macos"),
@@ -178,6 +176,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// Background image, if we have one.
         bg_image: ?imagepkg.Image = null,
+        /// Set when the configured image should be (re)loaded; the
+        /// renderer thread picks it up in uploadBackgroundImage.
+        bg_image_reload: bool = false,
         /// Set whenever the background image changes, signalling
         /// that the new background image needs to be uploaded to
         /// the GPU.
@@ -1760,87 +1761,19 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.swap_chain.releaseFrame();
         }
 
-        /// Call this any time the background image path changes.
+        /// Call this any time the background image path changes. Loading
+        /// itself happens in uploadBackgroundImage on the renderer thread,
+        /// off the thread that creates or reconfigures the surface: the
+        /// decode is shared through bg_image_cache, but even the GPU
+        /// upload of a large image is too slow to pay while the UI waits.
         ///
         /// Caller must hold the draw mutex.
         fn prepBackgroundImage(self: *Self) !void {
-            // Then we try to load the background image if we have a path.
-            if (self.config.bg_image) |p| load_background: {
-                const path = switch (p) {
-                    .required, .optional => |slice| slice,
-                };
-
-                // Open the file
-                var file = std.fs.openFileAbsolute(path, .{}) catch |err| {
-                    log.warn(
-                        "error opening background image file \"{s}\": {}",
-                        .{ path, err },
-                    );
-                    break :load_background;
-                };
-                defer file.close();
-
-                // Read it
-                const contents = file.readToEndAlloc(
-                    self.alloc,
-                    std.math.maxInt(u32), // Max size of 4 GiB, for now.
-                ) catch |err| {
-                    log.warn(
-                        "error reading background image file \"{s}\": {}",
-                        .{ path, err },
-                    );
-                    break :load_background;
-                };
-                defer self.alloc.free(contents);
-
-                // Figure out what type it probably is.
-                const file_type = switch (FileType.detect(contents)) {
-                    .unknown => FileType.guessFromExtension(
-                        std.fs.path.extension(path),
-                    ),
-                    else => |t| t,
-                };
-
-                // Decode it if we know how.
-                const image_data = switch (file_type) {
-                    .png => try wuffs.png.decode(self.alloc, contents),
-                    .jpeg => try wuffs.jpeg.decode(self.alloc, contents),
-                    .unknown => {
-                        log.warn(
-                            "Cannot determine file type for background image file \"{s}\"!",
-                            .{path},
-                        );
-                        break :load_background;
-                    },
-                    else => |f| {
-                        log.warn(
-                            "Unsupported file type {} for background image file \"{s}\"!",
-                            .{ f, path },
-                        );
-                        break :load_background;
-                    },
-                };
-
-                const image: imagepkg.Image = .{
-                    .pending = .{
-                        .width = image_data.width,
-                        .height = image_data.height,
-                        .pixel_format = .rgba,
-                        .data = image_data.data.ptr,
-                    },
-                };
-
-                // If we have an existing background image, replace it.
-                // Otherwise, set this as our background image directly.
-                if (self.bg_image) |*img| {
-                    img.markForReplace(self.alloc, image);
-                } else {
-                    self.bg_image = image;
-                }
-            } else {
-                // If we don't have a background image path, mark our
-                // background image for unload if we currently have one.
-                if (self.bg_image) |*img| img.markForUnload();
+            if (self.config.bg_image != null) {
+                self.bg_image_reload = true;
+            } else if (self.bg_image) |*img| {
+                // No path any more: drop whatever is loaded.
+                img.markForUnload();
             }
         }
 
@@ -1849,10 +1782,50 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 if (bg.isUnloading()) {
                     bg.deinit(self.alloc);
                     self.bg_image = null;
-                    return;
+                } else if (bg.isPending()) {
+                    try bg.upload(self.alloc, &self.api);
                 }
-                if (bg.isPending()) try bg.upload(self.alloc, &self.api);
             }
+            if (self.bg_image_reload) self.loadBackgroundImage();
+        }
+
+        /// Load the configured background image straight into a texture.
+        /// Runs on the renderer thread; see prepBackgroundImage.
+        fn loadBackgroundImage(self: *Self) void {
+            self.bg_image_reload = false;
+            const path = switch (self.config.bg_image orelse return) {
+                .required, .optional => |slice| slice,
+            };
+
+            const view = bg_image_cache.acquire(self.alloc, path) catch |err| {
+                // Open, read and file-type problems are logged by the cache.
+                switch (err) {
+                    error.OpenFailed,
+                    error.ReadFailed,
+                    error.UnknownFileType,
+                    error.UnsupportedFileType,
+                    => {},
+                    else => log.warn("error decoding background image file \"{s}\": {}", .{ path, err }),
+                }
+                return;
+            };
+            defer view.release();
+
+            // The upload copies the pixels, so the borrowed view is only
+            // needed for this call.
+            const texture = Texture.init(
+                self.api.imageTextureOptions(.rgba, true),
+                view.width,
+                view.height,
+                view.data,
+            ) catch |err| {
+                log.warn("error uploading background image err={}", .{err});
+                return;
+            };
+
+            // Whatever was loaded before gives way to this image.
+            if (self.bg_image) |*img| img.deinit(self.alloc);
+            self.bg_image = .{ .ready = texture };
         }
 
         /// Update the configuration.
