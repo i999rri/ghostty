@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
     // The in-distro half runs inside the WSL distro, so it is a static
     // Linux binary whatever the host targets.
     const helper = b.addExecutable(.{
-        .name = "ghostty-wsl-helper",
+        .name = "ghostty-wsl-bridge",
         .root_module = b.createModule(.{
             .root_source_file = b.path("bridge/helper.zig"),
             .target = b.resolveTargetQuery(.{

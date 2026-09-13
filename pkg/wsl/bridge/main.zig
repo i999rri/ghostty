@@ -68,7 +68,7 @@ test "Launch.argv" {
     const alloc = arena.allocator();
 
     const full = try (Launch{
-        .helper_path = "C:\\app\\ghostty-wsl-helper",
+        .helper_path = "C:\\app\\ghostty-wsl-bridge",
         .invocation = .{ .distribution = "NixOS", .command = &.{ "htop", "-d", "5" } },
         .cols = 132,
         .rows = 50,
@@ -82,7 +82,7 @@ test "Launch.argv" {
         "/bin/sh",
         "-c",
         "exec \"$(wslpath -a \"$0\")\" --cols 132 --rows 50 --term 'xterm-ghostty' \"$@\"",
-        "C:/app/ghostty-wsl-helper",
+        "C:/app/ghostty-wsl-bridge",
         "--",
         "htop",
         "-d",
@@ -94,7 +94,7 @@ test "Launch.argv" {
     // No distro and no command: the default distro's login shell, so
     // the line ends at the binary's path.
     const bare = try (Launch{
-        .helper_path = "C:/app/ghostty-wsl-helper",
+        .helper_path = "C:/app/ghostty-wsl-bridge",
         .invocation = .{},
         .cols = 80,
         .rows = 24,
@@ -102,7 +102,7 @@ test "Launch.argv" {
     }).argv(alloc);
     try testing.expectEqual(@as(usize, 6), bare.len);
     try testing.expectEqualStrings("--exec", bare[1]);
-    try testing.expectEqualStrings("C:/app/ghostty-wsl-helper", bare[5]);
+    try testing.expectEqualStrings("C:/app/ghostty-wsl-bridge", bare[5]);
 }
 
 test {

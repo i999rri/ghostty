@@ -210,10 +210,10 @@ pub fn build(b: *std.Build) !void {
             .target = config.target,
             .optimize = config.optimize,
         })) |dep| {
-            const wsl_helper = dep.artifact("ghostty-wsl-helper");
-            b.installArtifact(wsl_helper);
-            b.step("wsl-helper", "Build only the WSL bridge helper").dependOn(
-                &b.addInstallArtifact(wsl_helper, .{}).step,
+            const wsl_bridge = dep.artifact("ghostty-wsl-bridge");
+            b.installArtifact(wsl_bridge);
+            b.step("wsl-bridge", "Build only the WSL bridge's in-distro binary").dependOn(
+                &b.addInstallArtifact(wsl_bridge, .{}).step,
             );
         }
     }

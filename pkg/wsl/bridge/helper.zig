@@ -23,7 +23,7 @@ const Args = struct {
 };
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
-    std.debug.print("ghostty-wsl-helper: " ++ fmt ++ "\n", args);
+    std.debug.print("ghostty-wsl-bridge: " ++ fmt ++ "\n", args);
     posix.exit(1);
 }
 
@@ -182,7 +182,7 @@ fn spawnChild(pty: *const Pty, args: Args, alloc: std.mem.Allocator) posix.pid_t
     posix.close(pty.master);
 
     const err = posix.execvpeZ(exec_file, argv_z, envp);
-    std.debug.print("ghostty-wsl-helper: exec failed: {}\n", .{err});
+    std.debug.print("ghostty-wsl-bridge: exec failed: {}\n", .{err});
     posix.exit(127);
 }
 

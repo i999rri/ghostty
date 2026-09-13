@@ -1130,7 +1130,7 @@ const Subprocess = struct {
     }
 
     /// Start a session through the WSL pty bridge instead of ConPTY
-    /// (GhosttyWin32#206). wsl.exe runs ghostty-wsl-helper, which owns
+    /// (GhosttyWin32#206). wsl.exe runs ghostty-wsl-bridge, which owns
     /// a real Linux pty; see pkg/wsl/bridge/Pty.zig for the pipe layout.
     fn startWslBridge(
         self: *Subprocess,
@@ -1139,14 +1139,15 @@ const Subprocess = struct {
     ) !PtyFds {
         const arena = self.arena.allocator();
 
-        // The helper ships next to the host executable; the env var
-        // override serves development builds running from elsewhere.
+        // The in-distro binary ships next to the host executable; the
+        // env var override serves development builds running from
+        // elsewhere.
         const helper_path: []u8 = helper: {
-            if (std.process.getEnvVarOwned(arena, "GHOSTTY_WSL_HELPER")) |v| {
+            if (std.process.getEnvVarOwned(arena, "GHOSTTY_WSL_BRIDGE")) |v| {
                 break :helper v;
             } else |_| {}
             const exe_dir = try std.fs.selfExeDirPathAlloc(arena);
-            break :helper try std.fs.path.join(arena, &.{ exe_dir, "ghostty-wsl-helper" });
+            break :helper try std.fs.path.join(arena, &.{ exe_dir, "ghostty-wsl-bridge" });
         };
         const size: WslBridgePty.winsize = .{
             .ws_row = std.math.cast(u16, self.grid_size.rows) orelse std.math.maxInt(u16),
