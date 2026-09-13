@@ -1827,6 +1827,17 @@ pub const CAPI = struct {
         return surface.core_surface.getProcessInfo(.foreground_pid) orelse 0;
     }
 
+    /// Copies the foreground process name of a WSL bridge session into
+    /// buf, returning the copied length (0 = no bridge-reported name;
+    /// the host resolves ConPTY sessions itself via the pid).
+    export fn ghostty_surface_foreground_process_name(
+        surface: *Surface,
+        buf: [*]u8,
+        buf_len: usize,
+    ) usize {
+        return surface.core_surface.foregroundProcessName(buf[0..buf_len]);
+    }
+
     /// Returns the PTY name for the surface. The returned string must be
     /// freed by the caller via ghostty_string_free.
     export fn ghostty_surface_tty_name(surface: *Surface) String {

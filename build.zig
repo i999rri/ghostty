@@ -202,6 +202,22 @@ pub fn build(b: *std.Build) !void {
         }
     }
 
+    // The WSL bridge's in-distro half (GhosttyWin32#206) is a Linux
+    // binary regardless of host target; pkg/wsl builds it alongside the
+    // Windows-side module that libghostty imports.
+    if (config.target.result.os.tag == .windows) {
+        if (b.lazyDependency("wsl", .{
+            .target = config.target,
+            .optimize = config.optimize,
+        })) |dep| {
+            const wsl_bridge = dep.artifact("ghostty-wsl-bridge");
+            b.installArtifact(wsl_bridge);
+            b.step("wsl-bridge", "Build only the WSL bridge's in-distro binary").dependOn(
+                &b.addInstallArtifact(wsl_bridge, .{}).step,
+            );
+        }
+    }
+
     // macOS only artifacts. These will error if they're initialized for
     // other targets.
     if (config.target.result.os.tag.isDarwin() and

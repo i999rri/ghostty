@@ -663,6 +663,7 @@ pub fn init(
             .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
             .resources_dir = global_state.resources_dir.host(),
             .term = config.term,
+            .wsl_bridge = config.@"wsl-bridge",
             .rt_pre_exec_info = .init(config),
             .rt_post_fork_info = .init(config),
         });
@@ -6382,6 +6383,12 @@ fn testMouseSelectionIsNull(
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.io.getProcessInfo(info);
+}
+
+/// The foreground process name of a WSL bridge session, copied into
+/// `out`; 0 when the session has no bridge-reported name.
+pub fn foregroundProcessName(self: *Surface, out: []u8) usize {
+    return self.io.foregroundProcessName(out);
 }
 
 test "Surface: selection logic" {

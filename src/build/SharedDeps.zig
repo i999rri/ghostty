@@ -434,6 +434,15 @@ pub fn add(
             .optimize = optimize,
         });
         step.root_module.addImport("d3d11-c", d3d11_c.createModule());
+
+        // WSL direct pty bridge, Windows side. The in-distro half is a
+        // separate artifact installed by the root build.
+        if (b.lazyDependency("wsl", .{
+            .target = target,
+            .optimize = optimize,
+        })) |dep| {
+            step.root_module.addImport("wsl", dep.module("wsl"));
+        }
     }
     if (step.rootModuleTarget().os.tag == .linux) {
         step.addIncludePath(b.path("src/apprt/gtk"));

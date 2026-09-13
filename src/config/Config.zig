@@ -3701,6 +3701,22 @@ else
 /// from working properly. https://github.com/vim/vim/pull/13211 fixes this.
 term: []const u8 = "xterm-ghostty",
 
+/// Route WSL sessions through a real Linux pty inside the distro
+/// instead of driving `wsl.exe` through ConPTY. ConPTY re-renders the
+/// VT stream, so the bytes applications actually write never reach the
+/// terminal; the bridge relays them untouched (GhosttyWin32#206).
+///
+/// This applies per session: any session whose command is `wsl` or
+/// `wsl.exe` is routed through the bridge, so a normal shell tab is
+/// unaffected while a `wsl` tab bypasses ConPTY. The distribution and
+/// in-distro command are taken from the `wsl` command itself, e.g.
+/// `wsl -d NixOS` or `wsl -d NixOS -- htop`.
+///
+/// Set to false to run `wsl` under ConPTY like any other command.
+///
+/// Windows only.
+@"wsl-bridge": bool = true,
+
 /// String to send when we receive `ENQ` (`0x05`) from the command that we are
 /// running. Defaults to an empty string if not set.
 @"enquiry-response": []const u8 = "",

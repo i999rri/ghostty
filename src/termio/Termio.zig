@@ -755,3 +755,9 @@ pub const ThreadData = struct {
 pub fn getProcessInfo(self: *Termio, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.backend.getProcessInfo(info);
 }
+
+/// The foreground process name of a WSL bridge session, copied into
+/// `out`; 0 when the session has no bridge-reported name.
+pub fn foregroundProcessName(self: *Termio, out: []u8) usize {
+    return self.backend.foregroundProcessName(out);
+}
