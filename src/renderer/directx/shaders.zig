@@ -96,13 +96,22 @@ pub const BgImage = extern struct {
         _padding: u1 = 0,
 
         pub const Position = enum(u4) {
-            tl = 0, tc = 1, tr = 2,
-            ml = 3, mc = 4, mr = 5,
-            bl = 6, bc = 7, br = 8,
+            tl = 0,
+            tc = 1,
+            tr = 2,
+            ml = 3,
+            mc = 4,
+            mr = 5,
+            bl = 6,
+            bc = 7,
+            br = 8,
         };
 
         pub const Fit = enum(u2) {
-            contain = 0, cover = 1, stretch = 2, none = 3,
+            contain = 0,
+            cover = 1,
+            stretch = 2,
+            none = 3,
         };
     };
 };

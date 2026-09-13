@@ -149,10 +149,7 @@ pub fn step(self: *Self, s: Step) void {
     };
     if (s.draw.instance_count > 1 or has_vertex_data) {
         const ic: u32 = @intCast(@max(s.draw.instance_count, 1));
-        dx.dx_draw_instanced(dev,
-            @intCast(s.draw.vertex_count),
-            ic,
-            0, 0, topology);
+        dx.dx_draw_instanced(dev, @intCast(s.draw.vertex_count), ic, 0, 0, topology);
     } else {
         dx.dx_draw(dev, @intCast(s.draw.vertex_count), 0, topology);
     }
