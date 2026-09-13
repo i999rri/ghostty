@@ -27,11 +27,11 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(helper);
 
-    // The protocol is the part both halves share and the only part
-    // that builds on any host, so it is what the tests cover.
+    // Tests cover the host-independent parts: wsl.exe's command line,
+    // the launch argv and the frame protocol.
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("bridge/protocol.zig"),
+            .root_source_file = b.path("main.zig"),
             .target = target,
             .optimize = optimize,
         }),
