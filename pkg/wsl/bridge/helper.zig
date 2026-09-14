@@ -329,7 +329,7 @@ const Comm = struct {
 
 /// The comm of the pty's foreground process, or null when the pty has
 /// no foreground group or /proc has nothing for it.
-fn foregroundComm(master: fd_t) ?Comm {
+fn readForegroundComm(master: fd_t) ?Comm {
     var pgrp: pid_t = 0;
     if (failed(linux.tcgetpgrp(master, &pgrp)) != null) return null;
     if (pgrp <= 0) return null;
@@ -402,11 +402,11 @@ pub fn main(init: std.process.Init.Minimal) void {
         // across exec, so a launcher that hands over to the real program
         // (NixOS wraps /bin/sh in a binary whose comm is "wrapper")
         // changes its comm without changing the group.
-        if (foregroundComm(pty.master)) |foreground| {
-            if (!foreground.eql(&helper_comm) and !foreground.eql(&sent_comm)) {
-                sent_comm = foreground;
-                writeFrame(stdout_fd, .fg_name, foreground.slice()) catch break :relay;
-            }
+        fg: {
+            const foreground = readForegroundComm(pty.master) orelse break :fg;
+            if (foreground.eql(&helper_comm) or foreground.eql(&sent_comm)) break :fg;
+            sent_comm = foreground;
+            writeFrame(stdout_fd, .fg_name, foreground.slice()) catch break :relay;
         }
 
         if (fds[2].revents & (linux.POLL.HUP | linux.POLL.ERR) != 0) break :relay;
