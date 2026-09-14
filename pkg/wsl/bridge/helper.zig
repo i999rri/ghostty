@@ -327,50 +327,14 @@ const Comm = struct {
     }
 };
 
-/// Follows the comm of the pty's foreground process and hands out each
-/// new one once. The host shows it in the tab title; a Windows-side
-/// pid lookup cannot see into the distro, so the name is resolved here.
-///
-/// The comm is re-read on every poll rather than only when the
-/// foreground process group changes: a process keeps its pid across
-/// exec, so a launcher that hands over to the real program (NixOS
-/// wraps /bin/sh in a binary whose comm is "wrapper") changes its
-/// comm without changing the group.
-const ForegroundTracker = struct {
-    master: fd_t,
-    /// This helper's own comm, read once at start.
-    helper: Comm,
-    /// The comm most recently handed out by `next`.
-    last: Comm = .empty,
-
-    fn init(master: fd_t) ForegroundTracker {
-        return .{
-            .master = master,
-            .helper = Comm.read(linux.getpid()) orelse .empty,
-        };
-    }
-
-    /// The foreground comm when it differs from the last one handed
-    /// out, else null.
-    fn next(self: *ForegroundTracker) ?Comm {
-        var pgrp: pid_t = 0;
-        if (failed(linux.tcgetpgrp(self.master, &pgrp)) != null) return null;
-        if (pgrp <= 0) return null;
-
-        const foreground = Comm.read(pgrp) orelse return null;
-        // Between fork and exec the child still carries the helper's own
-        // comm, and a tab titled after the plumbing would hide what the
-        // user is running.
-        const is_helper_itself = foreground.eql(&self.helper);
-        // The caller acts on every comm handed out, so the same one is
-        // not worth handing out twice.
-        const unchanged = foreground.eql(&self.last);
-        if (is_helper_itself or unchanged) return null;
-
-        self.last = foreground;
-        return foreground;
-    }
-};
+/// The comm of the pty's foreground process, or null when the pty has
+/// no foreground group or /proc has nothing for it.
+fn foregroundComm(master: fd_t) ?Comm {
+    var pgrp: pid_t = 0;
+    if (failed(linux.tcgetpgrp(master, &pgrp)) != null) return null;
+    if (pgrp <= 0) return null;
+    return Comm.read(pgrp);
+}
 
 /// Apply one stdin frame to the pty.
 fn handleFrame(pty: *const Pty, frame: protocol.Frame) !void {
@@ -394,8 +358,18 @@ pub fn main(init: std.process.Init.Minimal) void {
     const child = spawnChild(&pty, args, alloc, environ);
 
     var parser: protocol.Parser = .{};
-    var fg = ForegroundTracker.init(pty.master);
     var buf: [64 * 1024]u8 = undefined;
+
+    // The host titles the tab after the foreground comm, and a
+    // Windows-side pid lookup cannot see into the distro, so the name
+    // is resolved here and sent as fg_name frames.
+    //
+    // The helper's own comm is never sent: between fork and exec the
+    // child still carries it, and a tab titled after the plumbing would
+    // hide what the user is running.
+    const helper_comm = Comm.read(linux.getpid()) orelse Comm.empty;
+    // The comm last sent, so the host only hears about changes.
+    var sent_comm: Comm = .empty;
 
     // A broken stdout means the Windows side is gone; that surfaces as
     // an EPIPE from writeAll rather than a fatal SIGPIPE.
@@ -423,8 +397,16 @@ pub fn main(init: std.process.Init.Minimal) void {
             .INTR, .AGAIN => continue,
             else => break :relay,
         };
-        if (fg.next()) |foreground| {
-            writeFrame(stdout_fd, .fg_name, foreground.slice()) catch break :relay;
+        // Read the foreground comm every poll, not only when the
+        // foreground process group changes: a process keeps its pid
+        // across exec, so a launcher that hands over to the real program
+        // (NixOS wraps /bin/sh in a binary whose comm is "wrapper")
+        // changes its comm without changing the group.
+        if (foregroundComm(pty.master)) |foreground| {
+            if (!foreground.eql(&helper_comm) and !foreground.eql(&sent_comm)) {
+                sent_comm = foreground;
+                writeFrame(stdout_fd, .fg_name, foreground.slice()) catch break :relay;
+            }
         }
 
         if (fds[2].revents & (linux.POLL.HUP | linux.POLL.ERR) != 0) break :relay;
