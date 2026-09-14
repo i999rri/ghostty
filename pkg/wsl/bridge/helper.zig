@@ -367,6 +367,10 @@ const ForegroundTracker = struct {
         const already_sent = foreground.eql(&self.sent);
         if (is_helper_itself or already_sent) return;
 
+        // Send the new name to the host and remember it as sent, so the
+        // next poll compares against what the host now shows. A failed
+        // write means the host is gone; the relay loop ends on the
+        // stdin hangup, so there is nothing to do about it here.
         self.sent = foreground;
         writeFrame(stdout_fd, .fg_name, foreground.slice()) catch {};
     }
