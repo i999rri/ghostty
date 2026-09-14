@@ -350,7 +350,9 @@ const ForegroundTracker = struct {
         };
     }
 
-    fn check(self: *ForegroundTracker) void {
+    /// Reads the foreground comm and sends it to the host when it is a
+    /// new one.
+    fn report(self: *ForegroundTracker) void {
         var pgrp: pid_t = 0;
         if (failed(linux.tcgetpgrp(self.master, &pgrp)) != null) return;
         if (pgrp <= 0) return;
@@ -421,7 +423,7 @@ pub fn main(init: std.process.Init.Minimal) void {
             .INTR, .AGAIN => continue,
             else => break :relay,
         };
-        fg.check();
+        fg.report();
 
         if (fds[2].revents & (linux.POLL.HUP | linux.POLL.ERR) != 0) break :relay;
 
