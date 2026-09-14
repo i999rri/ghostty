@@ -315,17 +315,16 @@ fn readComm(pid: i32, buf: []u8) ?[]const u8 {
 /// comm without changing the group.
 const ForegroundTracker = struct {
     master: fd_t,
-    /// The helper's own comm name; a foreground process still running
-    /// it is the forked child before exec, not a user command.
-    self_name: [16]u8 = undefined,
-    self_name_len: usize = 0,
-    /// The name last sent, so a poll only writes a frame on a change.
-    last_name: [16]u8 = undefined,
-    last_name_len: usize = 0,
+    /// This helper's own comm, read once at start.
+    helper_comm: [16]u8 = undefined,
+    helper_comm_len: usize = 0,
+    /// The comm most recently sent to the host.
+    sent_comm: [16]u8 = undefined,
+    sent_comm_len: usize = 0,
 
     fn init(master: fd_t) ForegroundTracker {
         var self: ForegroundTracker = .{ .master = master };
-        if (readComm(linux.getpid(), &self.self_name)) |name| self.self_name_len = name.len;
+        if (readComm(linux.getpid(), &self.helper_comm)) |name| self.helper_comm_len = name.len;
         return self;
     }
 
@@ -340,13 +339,13 @@ const ForegroundTracker = struct {
         // Skip the helper's own comm. Between fork and exec the child
         // still carries it, and a tab titled after the plumbing would
         // hide what the user is running.
-        if (std.mem.eql(u8, name, self.self_name[0..self.self_name_len])) return;
-        // Skip the name already sent. The host keeps the last title it
+        if (std.mem.eql(u8, name, self.helper_comm[0..self.helper_comm_len])) return;
+        // Skip the comm already sent. The host keeps the last title it
         // was given, so a frame is only worth its write on a change.
-        if (std.mem.eql(u8, name, self.last_name[0..self.last_name_len])) return;
+        if (std.mem.eql(u8, name, self.sent_comm[0..self.sent_comm_len])) return;
 
-        @memcpy(self.last_name[0..name.len], name);
-        self.last_name_len = name.len;
+        @memcpy(self.sent_comm[0..name.len], name);
+        self.sent_comm_len = name.len;
         writeFrame(stdout_fd, .fg_name, name) catch {};
     }
 };
