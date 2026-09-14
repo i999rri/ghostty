@@ -307,13 +307,21 @@ fn readComm(pid: i32, buf: []u8) ?[]const u8 {
 /// Reports the foreground process's comm name on stdout when it
 /// changes. The host shows it in the tab title; a Windows-side pid
 /// lookup cannot see into the distro, so the name is resolved here.
+///
+/// The name is re-read on every poll rather than only when the
+/// foreground process group changes: a process keeps its pid across
+/// exec, so a launcher that hands over to the real program (NixOS
+/// wraps /bin/sh in a binary whose comm is "wrapper") changes its
+/// comm without changing the group.
 const ForegroundTracker = struct {
     master: fd_t,
-    last_pgrp: i32 = 0,
     /// The helper's own comm name; a foreground process still running
     /// it is the forked child before exec, not a user command.
     self_name: [16]u8 = undefined,
     self_name_len: usize = 0,
+    /// The name last sent, so a poll only writes a frame on a change.
+    last_name: [16]u8 = undefined,
+    last_name_len: usize = 0,
 
     fn init(master: fd_t) ForegroundTracker {
         var self: ForegroundTracker = .{ .master = master };
@@ -324,15 +332,16 @@ const ForegroundTracker = struct {
     fn check(self: *ForegroundTracker) void {
         var pgrp: pid_t = 0;
         if (failed(linux.tcgetpgrp(self.master, &pgrp)) != null) return;
-        if (pgrp <= 0 or pgrp == self.last_pgrp) return;
+        if (pgrp <= 0) return;
 
-        var name_buf: [256]u8 = undefined;
+        // comm is at most TASK_COMM_LEN (16) bytes including the NUL.
+        var name_buf: [16]u8 = undefined;
         const name = readComm(pgrp, &name_buf) orelse return;
-        // The forked child keeps the helper's comm until it execs the
-        // user's command; reporting it would title the tab with the
-        // helper. last_pgrp stays unset so the next poll retries.
         if (std.mem.eql(u8, name, self.self_name[0..self.self_name_len])) return;
-        self.last_pgrp = pgrp;
+        if (std.mem.eql(u8, name, self.last_name[0..self.last_name_len])) return;
+
+        @memcpy(self.last_name[0..name.len], name);
+        self.last_name_len = name.len;
         writeFrame(stdout_fd, .fg_name, name) catch {};
     }
 };
