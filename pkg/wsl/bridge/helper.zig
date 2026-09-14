@@ -327,9 +327,9 @@ const Comm = struct {
     }
 };
 
-/// Reports the foreground process's comm on stdout when it changes.
-/// The host shows it in the tab title; a Windows-side pid lookup
-/// cannot see into the distro, so the name is resolved here.
+/// Follows the comm of the pty's foreground process and hands out each
+/// new one once. The host shows it in the tab title; a Windows-side
+/// pid lookup cannot see into the distro, so the name is resolved here.
 ///
 /// The comm is re-read on every poll rather than only when the
 /// foreground process group changes: a process keeps its pid across
@@ -340,8 +340,8 @@ const ForegroundTracker = struct {
     master: fd_t,
     /// This helper's own comm, read once at start.
     helper: Comm,
-    /// The comm most recently sent to the host.
-    sent: Comm = .empty,
+    /// The comm most recently handed out by `next`.
+    last: Comm = .empty,
 
     fn init(master: fd_t) ForegroundTracker {
         return .{
@@ -350,29 +350,25 @@ const ForegroundTracker = struct {
         };
     }
 
-    /// Reads the foreground comm and sends it to the host when it is a
-    /// new one.
-    fn report(self: *ForegroundTracker) void {
+    /// The foreground comm when it differs from the last one handed
+    /// out, else null.
+    fn next(self: *ForegroundTracker) ?Comm {
         var pgrp: pid_t = 0;
-        if (failed(linux.tcgetpgrp(self.master, &pgrp)) != null) return;
-        if (pgrp <= 0) return;
+        if (failed(linux.tcgetpgrp(self.master, &pgrp)) != null) return null;
+        if (pgrp <= 0) return null;
 
-        const foreground = Comm.read(pgrp) orelse return;
+        const foreground = Comm.read(pgrp) orelse return null;
         // Between fork and exec the child still carries the helper's own
         // comm, and a tab titled after the plumbing would hide what the
         // user is running.
         const is_helper_itself = foreground.eql(&self.helper);
-        // The host keeps the last title it was given, so a frame is only
-        // worth its write on a change.
-        const already_sent = foreground.eql(&self.sent);
-        if (is_helper_itself or already_sent) return;
+        // The caller acts on every comm handed out, so the same one is
+        // not worth handing out twice.
+        const unchanged = foreground.eql(&self.last);
+        if (is_helper_itself or unchanged) return null;
 
-        // Send the new name to the host and remember it as sent, so the
-        // next poll compares against what the host now shows. A failed
-        // write means the host is gone; the relay loop ends on the
-        // stdin hangup, so there is nothing to do about it here.
-        self.sent = foreground;
-        writeFrame(stdout_fd, .fg_name, foreground.slice()) catch {};
+        self.last = foreground;
+        return foreground;
     }
 };
 
@@ -427,7 +423,9 @@ pub fn main(init: std.process.Init.Minimal) void {
             .INTR, .AGAIN => continue,
             else => break :relay,
         };
-        fg.report();
+        if (fg.next()) |foreground| {
+            writeFrame(stdout_fd, .fg_name, foreground.slice()) catch break :relay;
+        }
 
         if (fds[2].revents & (linux.POLL.HUP | linux.POLL.ERR) != 0) break :relay;
 
