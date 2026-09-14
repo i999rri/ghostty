@@ -289,26 +289,49 @@ fn writeDataFrames(fd: fd_t, bytes: []const u8) !void {
     }
 }
 
-/// The comm (short name) of a process, read from /proc.
-fn readComm(pid: i32, buf: []u8) ?[]const u8 {
-    var path_buf: [64:0]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
-    const rc = linux.open(path, .{ .ACCMODE = .RDONLY }, 0);
-    if (failed(rc) != null) return null;
-    const fd: fd_t = @intCast(rc);
-    defer _ = linux.close(fd);
-    const n = linux.read(fd, buf.ptr, buf.len);
-    if (failed(n) != null) return null;
-    const name = std.mem.trimEnd(u8, buf[0..n], "\n");
-    if (name.len == 0) return null;
-    return name;
-}
+/// A process's comm: the kernel's short command name, as read from
+/// /proc/<pid>/comm. Held by value, so the tracker keeps names across
+/// polls without an allocator; it changes when the process execs.
+const Comm = struct {
+    /// TASK_COMM_LEN, the kernel's limit including the trailing NUL.
+    const max_len = 16;
 
-/// Reports the foreground process's comm name on stdout when it
-/// changes. The host shows it in the tab title; a Windows-side pid
-/// lookup cannot see into the distro, so the name is resolved here.
+    bytes: [max_len]u8 = undefined,
+    len: usize = 0,
+
+    const empty: Comm = .{};
+
+    /// The comm of `pid`, or null when /proc has nothing for it.
+    fn read(pid: i32) ?Comm {
+        var path_buf: [64:0]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
+        const rc = linux.open(path, .{ .ACCMODE = .RDONLY }, 0);
+        if (failed(rc) != null) return null;
+        const fd: fd_t = @intCast(rc);
+        defer _ = linux.close(fd);
+
+        var comm: Comm = .{};
+        const n = linux.read(fd, &comm.bytes, comm.bytes.len);
+        if (failed(n) != null) return null;
+        comm.len = std.mem.trimEnd(u8, comm.bytes[0..n], "\n").len;
+        if (comm.len == 0) return null;
+        return comm;
+    }
+
+    fn slice(self: *const Comm) []const u8 {
+        return self.bytes[0..self.len];
+    }
+
+    fn eql(self: *const Comm, other: *const Comm) bool {
+        return std.mem.eql(u8, self.slice(), other.slice());
+    }
+};
+
+/// Reports the foreground process's comm on stdout when it changes.
+/// The host shows it in the tab title; a Windows-side pid lookup
+/// cannot see into the distro, so the name is resolved here.
 ///
-/// The name is re-read on every poll rather than only when the
+/// The comm is re-read on every poll rather than only when the
 /// foreground process group changes: a process keeps its pid across
 /// exec, so a launcher that hands over to the real program (NixOS
 /// wraps /bin/sh in a binary whose comm is "wrapper") changes its
@@ -316,16 +339,15 @@ fn readComm(pid: i32, buf: []u8) ?[]const u8 {
 const ForegroundTracker = struct {
     master: fd_t,
     /// This helper's own comm, read once at start.
-    helper_comm: [16]u8 = undefined,
-    helper_comm_len: usize = 0,
+    helper: Comm,
     /// The comm most recently sent to the host.
-    sent_comm: [16]u8 = undefined,
-    sent_comm_len: usize = 0,
+    sent: Comm = .empty,
 
     fn init(master: fd_t) ForegroundTracker {
-        var self: ForegroundTracker = .{ .master = master };
-        if (readComm(linux.getpid(), &self.helper_comm)) |name| self.helper_comm_len = name.len;
-        return self;
+        return .{
+            .master = master,
+            .helper = Comm.read(linux.getpid()) orelse .empty,
+        };
     }
 
     fn check(self: *ForegroundTracker) void {
@@ -333,21 +355,18 @@ const ForegroundTracker = struct {
         if (failed(linux.tcgetpgrp(self.master, &pgrp)) != null) return;
         if (pgrp <= 0) return;
 
-        // comm is at most TASK_COMM_LEN (16) bytes including the NUL.
-        var name_buf: [16]u8 = undefined;
-        const name = readComm(pgrp, &name_buf) orelse return;
+        const comm = Comm.read(pgrp) orelse return;
         // Between fork and exec the child still carries the helper's own
         // comm, and a tab titled after the plumbing would hide what the
         // user is running.
-        const is_helper_itself = std.mem.eql(u8, name, self.helper_comm[0..self.helper_comm_len]);
+        const is_helper_itself = comm.eql(&self.helper);
         // The host keeps the last title it was given, so a frame is only
         // worth its write on a change.
-        const already_sent = std.mem.eql(u8, name, self.sent_comm[0..self.sent_comm_len]);
+        const already_sent = comm.eql(&self.sent);
         if (is_helper_itself or already_sent) return;
 
-        @memcpy(self.sent_comm[0..name.len], name);
-        self.sent_comm_len = name.len;
-        writeFrame(stdout_fd, .fg_name, name) catch {};
+        self.sent = comm;
+        writeFrame(stdout_fd, .fg_name, comm.slice()) catch {};
     }
 };
 
