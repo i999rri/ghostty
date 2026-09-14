@@ -337,10 +337,12 @@ const ForegroundTracker = struct {
         // comm is at most TASK_COMM_LEN (16) bytes including the NUL.
         var name_buf: [16]u8 = undefined;
         const name = readComm(pgrp, &name_buf) orelse return;
-        // The forked child keeps the helper's comm until it execs the
-        // user's command; that is not a program to title the tab with.
+        // Between fork and exec the child still carries the helper's own
+        // comm; a tab titled after the plumbing would hide what the user
+        // is running, so that name never goes out.
         if (std.mem.eql(u8, name, self.self_name[0..self.self_name_len])) return;
-        // Same program as last reported; nothing changed for the host.
+        // The host keeps the last title it was given, so a frame is only
+        // worth its write when the name differs from the one already sent.
         if (std.mem.eql(u8, name, self.last_name[0..self.last_name_len])) return;
 
         @memcpy(self.last_name[0..name.len], name);
