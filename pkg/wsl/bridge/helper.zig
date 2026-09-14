@@ -360,17 +360,6 @@ pub fn main(init: std.process.Init.Minimal) void {
     var parser: protocol.Parser = .{};
     var buf: [64 * 1024]u8 = undefined;
 
-    // The host titles the tab after the foreground comm, and a
-    // Windows-side pid lookup cannot see into the distro, so the name
-    // is resolved here and sent as fg_name frames.
-    //
-    // The helper's own comm is never sent: between fork and exec the
-    // child still carries it, and a tab titled after the plumbing would
-    // hide what the user is running.
-    const helper_comm = Comm.read(linux.getpid()) orelse Comm.empty;
-    // The comm last sent, so the host only hears about changes.
-    var sent_comm: Comm = .empty;
-
     // A broken stdout means the Windows side is gone; that surfaces as
     // an EPIPE from writeAll rather than a fatal SIGPIPE.
     const sa: linux.Sigaction = .{
@@ -390,6 +379,18 @@ pub fn main(init: std.process.Init.Minimal) void {
         .{ .fd = stdin_fd, .events = linux.POLL.IN, .revents = 0 },
         .{ .fd = stdout_fd, .events = 0, .revents = 0 },
     };
+
+    // The host titles the tab after the foreground comm, and a
+    // Windows-side pid lookup cannot see into the distro, so the name
+    // is resolved here and sent as fg_name frames.
+    //
+    // The helper's own comm is never sent: between fork and exec the
+    // child still carries it, and a tab titled after the plumbing would
+    // hide what the user is running.
+    const helper_comm = Comm.read(linux.getpid()) orelse Comm.empty;
+    // The comm last sent. It outlives one poll so the next one can tell
+    // a change from a repeat; the host only hears about changes.
+    var sent_comm: Comm = .empty;
 
     relay: while (true) {
         // The timeout doubles as the foreground-name poll cadence.
