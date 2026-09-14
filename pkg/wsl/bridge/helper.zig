@@ -336,13 +336,14 @@ const ForegroundTracker = struct {
         // comm is at most TASK_COMM_LEN (16) bytes including the NUL.
         var name_buf: [16]u8 = undefined;
         const name = readComm(pgrp, &name_buf) orelse return;
-        // Skip the helper's own comm. Between fork and exec the child
-        // still carries it, and a tab titled after the plumbing would
-        // hide what the user is running.
-        if (std.mem.eql(u8, name, self.helper_comm[0..self.helper_comm_len])) return;
-        // Skip the comm already sent. The host keeps the last title it
-        // was given, so a frame is only worth its write on a change.
-        if (std.mem.eql(u8, name, self.sent_comm[0..self.sent_comm_len])) return;
+        // Between fork and exec the child still carries the helper's own
+        // comm, and a tab titled after the plumbing would hide what the
+        // user is running.
+        const is_helper_itself = std.mem.eql(u8, name, self.helper_comm[0..self.helper_comm_len]);
+        // The host keeps the last title it was given, so a frame is only
+        // worth its write on a change.
+        const already_sent = std.mem.eql(u8, name, self.sent_comm[0..self.sent_comm_len]);
+        if (is_helper_itself or already_sent) return;
 
         @memcpy(self.sent_comm[0..name.len], name);
         self.sent_comm_len = name.len;
