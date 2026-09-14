@@ -337,7 +337,10 @@ const ForegroundTracker = struct {
         // comm is at most TASK_COMM_LEN (16) bytes including the NUL.
         var name_buf: [16]u8 = undefined;
         const name = readComm(pgrp, &name_buf) orelse return;
+        // The forked child keeps the helper's comm until it execs the
+        // user's command; that is not a program to title the tab with.
         if (std.mem.eql(u8, name, self.self_name[0..self.self_name_len])) return;
+        // Same program as last reported; nothing changed for the host.
         if (std.mem.eql(u8, name, self.last_name[0..self.last_name_len])) return;
 
         @memcpy(self.last_name[0..name.len], name);
