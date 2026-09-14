@@ -355,18 +355,18 @@ const ForegroundTracker = struct {
         if (failed(linux.tcgetpgrp(self.master, &pgrp)) != null) return;
         if (pgrp <= 0) return;
 
-        const comm = Comm.read(pgrp) orelse return;
+        const foreground = Comm.read(pgrp) orelse return;
         // Between fork and exec the child still carries the helper's own
         // comm, and a tab titled after the plumbing would hide what the
         // user is running.
-        const is_helper_itself = comm.eql(&self.helper);
+        const is_helper_itself = foreground.eql(&self.helper);
         // The host keeps the last title it was given, so a frame is only
         // worth its write on a change.
-        const already_sent = comm.eql(&self.sent);
+        const already_sent = foreground.eql(&self.sent);
         if (is_helper_itself or already_sent) return;
 
-        self.sent = comm;
-        writeFrame(stdout_fd, .fg_name, comm.slice()) catch {};
+        self.sent = foreground;
+        writeFrame(stdout_fd, .fg_name, foreground.slice()) catch {};
     }
 };
 
