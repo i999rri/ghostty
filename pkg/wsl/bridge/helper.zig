@@ -405,6 +405,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         // changes its comm without changing the group.
         fg: {
             const foreground = readForegroundComm(pty.master) orelse break :fg;
+
             const is_helper_itself = foreground.eql(&helper_comm);
             const already_sent = foreground.eql(&last_sent_comm);
 
