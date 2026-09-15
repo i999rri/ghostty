@@ -409,6 +409,7 @@ pub fn main(init: std.process.Init.Minimal) void {
             const already_sent = foreground.eql(&last_sent_comm);
 
             if (is_helper_itself or already_sent) break :fg;
+
             last_sent_comm = foreground;
             writeFrame(stdout_fd, .fg_name, foreground.slice()) catch break :relay;
         }
