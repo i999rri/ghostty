@@ -303,6 +303,9 @@ const Comm = struct {
 
     /// The comm of `pid`, or null when /proc has nothing for it.
     fn read(pid: i32) ?Comm {
+        // Room for "/proc/<pid>/comm" with any pid: PID_MAX_LIMIT is
+        // 4194304 (7 digits), so the longest path is 18 bytes plus NUL.
+        // 64 is that with slack, not a limit anything else depends on.
         var path_buf: [64:0]u8 = undefined;
         const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
 
