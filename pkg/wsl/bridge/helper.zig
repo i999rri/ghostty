@@ -305,16 +305,20 @@ const Comm = struct {
     fn read(pid: i32) ?Comm {
         var path_buf: [64:0]u8 = undefined;
         const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
+
         const rc = linux.open(path, .{ .ACCMODE = .RDONLY }, 0);
         if (failed(rc) != null) return null;
+
         const fd: fd_t = @intCast(rc);
         defer _ = linux.close(fd);
 
         var comm: Comm = .{};
         const n = linux.read(fd, &comm.bytes, comm.bytes.len);
         if (failed(n) != null) return null;
+
         comm.len = std.mem.trimEnd(u8, comm.bytes[0..n], "\n").len;
         if (comm.len == 0) return null;
+
         return comm;
     }
 
@@ -333,6 +337,7 @@ fn readForegroundComm(master: fd_t) ?Comm {
     var pgrp: pid_t = 0;
     if (failed(linux.tcgetpgrp(master, &pgrp)) != null) return null;
     if (pgrp <= 0) return null;
+
     return Comm.read(pgrp);
 }
 
