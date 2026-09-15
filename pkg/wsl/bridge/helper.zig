@@ -289,53 +289,61 @@ fn writeDataFrames(fd: fd_t, bytes: []const u8) !void {
     }
 }
 
-/// The comm (short name) of a process, read from /proc.
-fn readComm(pid: i32, buf: []u8) ?[]const u8 {
-    var path_buf: [64:0]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
-    const rc = linux.open(path, .{ .ACCMODE = .RDONLY }, 0);
-    if (failed(rc) != null) return null;
-    const fd: fd_t = @intCast(rc);
-    defer _ = linux.close(fd);
-    const n = linux.read(fd, buf.ptr, buf.len);
-    if (failed(n) != null) return null;
-    const name = std.mem.trimEnd(u8, buf[0..n], "\n");
-    if (name.len == 0) return null;
-    return name;
-}
+/// A process's comm: the kernel's short command name, as read from
+/// /proc/<pid>/comm. Held by value, so the tracker keeps names across
+/// polls without an allocator; it changes when the process execs.
+const Comm = struct {
+    /// TASK_COMM_LEN, the kernel's limit including the trailing NUL.
+    const max_len = 16;
 
-/// Reports the foreground process's comm name on stdout when it
-/// changes. The host shows it in the tab title; a Windows-side pid
-/// lookup cannot see into the distro, so the name is resolved here.
-const ForegroundTracker = struct {
-    master: fd_t,
-    last_pgrp: i32 = 0,
-    /// The helper's own comm name; a foreground process still running
-    /// it is the forked child before exec, not a user command.
-    self_name: [16]u8 = undefined,
-    self_name_len: usize = 0,
+    bytes: [max_len]u8 = undefined,
+    len: usize = 0,
 
-    fn init(master: fd_t) ForegroundTracker {
-        var self: ForegroundTracker = .{ .master = master };
-        if (readComm(linux.getpid(), &self.self_name)) |name| self.self_name_len = name.len;
-        return self;
+    const empty: Comm = .{};
+
+    /// The comm of `pid`, or null when /proc has nothing for it.
+    fn read(pid: i32) ?Comm {
+        // Room for "/proc/<pid>/comm" with any pid.
+        // PID_MAX_LIMIT is 4194304 (7 digits),
+        // so the longest path is 18 bytes plus the terminating NUL.
+        // 64 leaves slack.
+        var path_buf: [64:0]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/comm", .{pid}) catch return null;
+
+        const rc = linux.open(path, .{ .ACCMODE = .RDONLY }, 0);
+        if (failed(rc) != null) return null;
+
+        const fd: fd_t = @intCast(rc);
+        defer _ = linux.close(fd);
+
+        var comm: Comm = .{};
+        const n = linux.read(fd, &comm.bytes, comm.bytes.len);
+        if (failed(n) != null) return null;
+
+        comm.len = std.mem.trimEnd(u8, comm.bytes[0..n], "\n").len;
+        if (comm.len == 0) return null;
+
+        return comm;
     }
 
-    fn check(self: *ForegroundTracker) void {
-        var pgrp: pid_t = 0;
-        if (failed(linux.tcgetpgrp(self.master, &pgrp)) != null) return;
-        if (pgrp <= 0 or pgrp == self.last_pgrp) return;
+    fn slice(self: *const Comm) []const u8 {
+        return self.bytes[0..self.len];
+    }
 
-        var name_buf: [256]u8 = undefined;
-        const name = readComm(pgrp, &name_buf) orelse return;
-        // The forked child keeps the helper's comm until it execs the
-        // user's command; reporting it would title the tab with the
-        // helper. last_pgrp stays unset so the next poll retries.
-        if (std.mem.eql(u8, name, self.self_name[0..self.self_name_len])) return;
-        self.last_pgrp = pgrp;
-        writeFrame(stdout_fd, .fg_name, name) catch {};
+    fn eql(self: *const Comm, other: *const Comm) bool {
+        return std.mem.eql(u8, self.slice(), other.slice());
     }
 };
+
+/// The comm of the pty's foreground process, or null when the pty has
+/// no foreground group or /proc has nothing for it.
+fn readForegroundComm(master: fd_t) ?Comm {
+    var pgrp: pid_t = 0;
+    if (failed(linux.tcgetpgrp(master, &pgrp)) != null) return null;
+    if (pgrp <= 0) return null;
+
+    return Comm.read(pgrp);
+}
 
 /// Apply one stdin frame to the pty.
 fn handleFrame(pty: *const Pty, frame: protocol.Frame) !void {
@@ -359,7 +367,6 @@ pub fn main(init: std.process.Init.Minimal) void {
     const child = spawnChild(&pty, args, alloc, environ);
 
     var parser: protocol.Parser = .{};
-    var fg = ForegroundTracker.init(pty.master);
     var buf: [64 * 1024]u8 = undefined;
 
     // A broken stdout means the Windows side is gone; that surfaces as
@@ -382,13 +389,40 @@ pub fn main(init: std.process.Init.Minimal) void {
         .{ .fd = stdout_fd, .events = 0, .revents = 0 },
     };
 
+    // The host titles the tab after the foreground comm, and a
+    // Windows-side pid lookup cannot see into the distro, so the name
+    // is resolved here and sent as fg_name frames.
+    //
+    // The helper's own comm is never sent: between fork and exec the
+    // child still carries it, and a tab titled after the plumbing would
+    // hide what the user is running.
+    const helper_comm = Comm.read(linux.getpid()) orelse Comm.empty;
+    // The comm last sent. It outlives one poll so the next one can tell
+    // a change from a repeat; the host only hears about changes.
+    var last_sent_comm: Comm = .empty;
+
     relay: while (true) {
         // The timeout doubles as the foreground-name poll cadence.
         if (failed(linux.poll(&fds, fds.len, 500))) |e| switch (e) {
             .INTR, .AGAIN => continue,
             else => break :relay,
         };
-        fg.check();
+        // Read the foreground comm every poll, not only when the
+        // foreground process group changes: a process keeps its pid
+        // across exec, so a launcher that hands over to the real program
+        // (NixOS wraps /bin/sh in a binary whose comm is "wrapper")
+        // changes its comm without changing the group.
+        fg: {
+            const foreground = readForegroundComm(pty.master) orelse break :fg;
+
+            const is_helper_itself = foreground.eql(&helper_comm);
+            const already_sent = foreground.eql(&last_sent_comm);
+
+            if (is_helper_itself or already_sent) break :fg;
+
+            last_sent_comm = foreground;
+            writeFrame(stdout_fd, .fg_name, foreground.slice()) catch break :relay;
+        }
 
         if (fds[2].revents & (linux.POLL.HUP | linux.POLL.ERR) != 0) break :relay;
 
