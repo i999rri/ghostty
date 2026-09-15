@@ -390,7 +390,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     const helper_comm = Comm.read(linux.getpid()) orelse Comm.empty;
     // The comm last sent. It outlives one poll so the next one can tell
     // a change from a repeat; the host only hears about changes.
-    var sent_comm: Comm = .empty;
+    var last_sent_comm: Comm = .empty;
 
     relay: while (true) {
         // The timeout doubles as the foreground-name poll cadence.
@@ -406,10 +406,10 @@ pub fn main(init: std.process.Init.Minimal) void {
         fg: {
             const foreground = readForegroundComm(pty.master) orelse break :fg;
             const is_helper_itself = foreground.eql(&helper_comm);
-            const already_sent = foreground.eql(&sent_comm);
+            const already_sent = foreground.eql(&last_sent_comm);
 
             if (is_helper_itself or already_sent) break :fg;
-            sent_comm = foreground;
+            last_sent_comm = foreground;
             writeFrame(stdout_fd, .fg_name, foreground.slice()) catch break :relay;
         }
 
