@@ -134,6 +134,14 @@ static void dx_create_backbuffer_rtv(DxDevice* dev) {
 // on renderer thread), so use Interlocked*.
 static volatile LONG g_device_count = 0;
 
+// Whether `device` was created with the debug layer, asked of the
+// device rather than inferred from the build: the layer needs the SDK
+// layers installed, so a build that requests it must say so in its
+// "device created" trace.
+static int dx_debug_layer_on(ID3D11Device* device) {
+    return (ID3D11Device_GetCreationFlags(device) & D3D11_CREATE_DEVICE_DEBUG) != 0;
+}
+
 DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     DxDevice* dev = (DxDevice*)calloc(1, sizeof(DxDevice));
     if (!dev) return NULL;
@@ -278,8 +286,10 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
 
     {
         LONG live = InterlockedIncrement(&g_device_count);
+        int debug_layer = dx_debug_layer_on(dev->device);
         char b[160];
-        sprintf(b, "D3D11: device created (hwnd) live=%ld this=%p\n", live, (void*)dev);
+        sprintf(b, "D3D11: device created (hwnd) live=%ld debug=%d this=%p\n",
+                live, debug_layer, (void*)dev);
         OutputDebugStringA(b);
     }
     return dev;
@@ -393,8 +403,10 @@ DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint
 
     {
         LONG live = InterlockedIncrement(&g_device_count);
+        int debug_layer = dx_debug_layer_on(dev->device);
         char b[160];
-        sprintf(b, "D3D11: device created (external swap chain) live=%ld this=%p\n", live, (void*)dev);
+        sprintf(b, "D3D11: device created (external swap chain) live=%ld debug=%d this=%p\n",
+                live, debug_layer, (void*)dev);
         OutputDebugStringA(b);
     }
     return dev;
@@ -567,8 +579,10 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
 
     {
         LONG live = InterlockedIncrement(&g_device_count);
+        int debug_layer = dx_debug_layer_on(dev->device);
         char b[160];
-        sprintf(b, "D3D11: device created (composition surface) live=%ld this=%p\n", live, (void*)dev);
+        sprintf(b, "D3D11: device created (composition surface) live=%ld debug=%d this=%p\n",
+                live, debug_layer, (void*)dev);
         OutputDebugStringA(b);
     }
     return dev;
