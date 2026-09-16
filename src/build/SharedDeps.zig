@@ -488,12 +488,23 @@ pub fn add(
     });
     // DirectX 11 renderer C implementation
     if (step.rootModuleTarget().os.tag == .windows) {
-        // d3d11_impl.c gates the D3D debug layer and its traces on
-        // NDEBUG, which Zig defines for ReleaseFast and ReleaseSmall
-        // only; ReleaseSafe is a release for the layer's purposes too.
+        // The D3D debug layer and its traces are an explicit opt-in
+        // (GHOSTTY_D3D_DEBUG from -Ddirectx-debug-layer), never derived
+        // from the optimize mode: a build that carries the layer needs
+        // the Graphics Tools feature installed to create a device at
+        // all, so it must not slip into a release. NDEBUG follows the
+        // usual C rule and is unrelated to the layer.
+        const d3d11_flags: []const []const u8 = flags: {
+            const release = optimize != .Debug;
+            const layer = self.config.directx_debug_layer;
+            if (release and layer) break :flags &.{ "-DNDEBUG", "-DGHOSTTY_D3D_DEBUG" };
+            if (release) break :flags &.{"-DNDEBUG"};
+            if (layer) break :flags &.{"-DGHOSTTY_D3D_DEBUG"};
+            break :flags &.{};
+        };
         step.root_module.addCSourceFiles(.{
             .files = &.{"src/renderer/directx/d3d11_impl.c"},
-            .flags = if (optimize != .Debug) &.{"-DNDEBUG"} else &.{},
+            .flags = d3d11_flags,
         });
         step.root_module.addIncludePath(b.path("src/renderer/directx"));
 
