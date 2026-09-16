@@ -488,7 +488,13 @@ pub fn add(
     });
     // DirectX 11 renderer C implementation
     if (step.rootModuleTarget().os.tag == .windows) {
-        step.root_module.addCSourceFiles(.{ .files = &.{"src/renderer/directx/d3d11_impl.c"} });
+        // d3d11_impl.c gates the D3D debug layer and its traces on
+        // NDEBUG, which Zig defines for ReleaseFast and ReleaseSmall
+        // only; ReleaseSafe is a release for the layer's purposes too.
+        step.root_module.addCSourceFiles(.{
+            .files = &.{"src/renderer/directx/d3d11_impl.c"},
+            .flags = if (optimize != .Debug) &.{"-DNDEBUG"} else &.{},
+        });
         step.root_module.addIncludePath(b.path("src/renderer/directx"));
 
         // TranslateC for d3d11_impl.h — type-safe C imports (no @cImport)
