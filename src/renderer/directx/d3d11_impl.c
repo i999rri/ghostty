@@ -147,22 +147,38 @@ static int dx_debug_layer_on(ID3D11Device* device) {
     return (ID3D11Device_GetCreationFlags(device) & D3D11_CREATE_DEVICE_DEBUG) != 0;
 }
 
+// Create the device with `flags`, retrying without the debug layer when
+// the SDK layers it needs are not installed: a debug-layer build would
+// otherwise get no device at all on a machine without the Graphics
+// Tools feature, instead of just losing validation.
+static HRESULT dx_create_device(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driver_type, UINT flags,
+                                DxDevice* dev) {
+    D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
+    HRESULT hr = D3D11CreateDevice(
+        adapter, driver_type, NULL, flags, feature_levels, 1, D3D11_SDK_VERSION,
+        &dev->device, &dev->feature_level, &dev->context);
+    if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING && (flags & D3D11_CREATE_DEVICE_DEBUG)) {
+        OutputDebugStringA("D3D11: debug layer unavailable (Graphics Tools not installed), "
+                           "creating the device without it\n");
+        hr = D3D11CreateDevice(
+            adapter, driver_type, NULL, flags & ~D3D11_CREATE_DEVICE_DEBUG, feature_levels, 1,
+            D3D11_SDK_VERSION, &dev->device, &dev->feature_level, &dev->context);
+    }
+    return hr;
+}
+
 DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     DxDevice* dev = (DxDevice*)calloc(1, sizeof(DxDevice));
     if (!dev) return NULL;
     dev->hwnd = (HWND)hwnd;
 
-    D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
     UINT flags = 0;
 #ifdef GHOSTTY_D3D_DEBUG
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
     // Create device first (without swap chain)
-    HRESULT hr = D3D11CreateDevice(
-        NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, flags,
-        feature_levels, 1, D3D11_SDK_VERSION,
-        &dev->device, &dev->feature_level, &dev->context);
+    HRESULT hr = dx_create_device(NULL, D3D_DRIVER_TYPE_HARDWARE, flags, dev);
 
     if (FAILED(hr)) {
         OutputDebugStringA("D3D11: CreateDevice FAILED\n");
@@ -449,11 +465,8 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
 #ifdef GHOSTTY_D3D_DEBUG
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
-    D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
-    hr = D3D11CreateDevice(
-        adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
-        NULL, flags, feature_levels, 1, D3D11_SDK_VERSION,
-        &dev->device, &dev->feature_level, &dev->context);
+    hr = dx_create_device(adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+                          flags, dev);
     if (FAILED(hr) || !dev->device) {
         OutputDebugStringA("D3D11: D3D11CreateDevice FAILED (composition surface)\n");
         if (adapter) IDXGIAdapter_Release(adapter);
