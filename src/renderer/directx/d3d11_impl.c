@@ -89,6 +89,11 @@ HRESULT WINAPI DCompositionCreateDevice(IDXGIDevice*, REFIID, void**);
 
 #include "d3d11_impl.h"
 
+// GHOSTTY_D3D_DEBUG turns on the D3D11 debug layer and the verbose
+// device/present traces. The build defines it for -Ddirectx-debug-layer
+// only (see src/build/SharedDeps.zig); it is deliberately not tied to
+// NDEBUG, which Zig leaves undefined in ReleaseSafe.
+
 // --- Device ---
 
 struct DxDevice {
@@ -149,7 +154,7 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
 
     D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
     UINT flags = 0;
-#ifndef NDEBUG
+#ifdef GHOSTTY_D3D_DEBUG
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
@@ -233,7 +238,7 @@ DxDevice* dx_create(void* hwnd, uint32_t width, uint32_t height) {
     // Get IDXGISwapChain from IDXGISwapChain1
     IDXGISwapChain1_QueryInterface(swap_chain1, &IID_IDXGISwapChain, (void**)&dev->swap_chain);
     IDXGISwapChain1_Release(swap_chain1);
-#ifndef NDEBUG
+#ifdef GHOSTTY_D3D_DEBUG
     OutputDebugStringA("D3D11: Device created successfully\n");
 #endif
 
@@ -323,7 +328,7 @@ DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint
             // Initial state is signaled — first wait passes through immediately.
             dev->wait_for_presentation = true;
             IDXGISwapChain2_Release(sc2);
-#ifndef NDEBUG
+#ifdef GHOSTTY_D3D_DEBUG
             if (dev->frame_latency_waitable) {
                 OutputDebugStringA("D3D11: Frame latency waitable enabled\n");
             }
@@ -334,7 +339,7 @@ DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint
     dev->feature_level = ID3D11Device_GetFeatureLevel(dev->device);
     // No DirectComposition — SwapChainPanel manages composition
 
-#ifndef NDEBUG
+#ifdef GHOSTTY_D3D_DEBUG
     {
         DXGI_SWAP_CHAIN_DESC desc = {0};
         IDXGISwapChain_GetDesc(dev->swap_chain, &desc);
@@ -352,7 +357,7 @@ DxDevice* dx_create_from_swap_chain(void* d3d_device, void* swap_chain_ptr, uint
     dev->bb_width = width;
     dev->bb_height = height;
 
-#ifndef NDEBUG
+#ifdef GHOSTTY_D3D_DEBUG
     {
         char buf[128];
         sprintf(buf, "D3D11: Backbuffer RTV: %p, context: %p\n",
@@ -441,7 +446,7 @@ DxDevice* dx_create_for_composition_surface(void* surface_handle_ptr, uint32_t w
     // AV in nvwgf2umx.dll, so the cross-thread teardown hypothesis was wrong.
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT
                | D3D11_CREATE_DEVICE_SINGLETHREADED;
-#ifndef NDEBUG
+#ifdef GHOSTTY_D3D_DEBUG
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
     D3D_FEATURE_LEVEL feature_levels[] = { D3D_FEATURE_LEVEL_11_0 };
@@ -691,7 +696,7 @@ void dx_present(DxDevice* dev, bool vsync) {
 
     present_count++;
 
-#ifndef NDEBUG
+#ifdef GHOSTTY_D3D_DEBUG
     if (present_count <= 5) {
         DXGI_SWAP_CHAIN_DESC desc = {0};
         IDXGISwapChain_GetDesc(dev->swap_chain, &desc);
@@ -711,7 +716,7 @@ void dx_present(DxDevice* dev, bool vsync) {
             dev->wait_for_presentation = true;
         }
         if (FAILED(hr)) {
-#ifndef NDEBUG
+#ifdef GHOSTTY_D3D_DEBUG
             char buf[128];
             sprintf(buf, "D3D11: Present #%d failed: hr=0x%08X\n", present_count, (unsigned)hr);
             OutputDebugStringA(buf);
