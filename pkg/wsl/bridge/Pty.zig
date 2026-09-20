@@ -140,7 +140,12 @@ pub fn open(io: std.Io, size: winsize) OpenError!Pty {
         w32.PIPE_ACCESS_OUTBOUND |
             w32.FILE_FLAG_FIRST_PIPE_INSTANCE |
             w32.FILE_FLAG_OVERLAPPED,
-        w32.PIPE_TYPE_BYTE,
+        // Same as WindowsPty's in_pipe: the pipe stands in for an
+        // anonymous one and is connected below, by this process. Named
+        // pipes take SMB clients unless told otherwise, and nothing off
+        // this machine has any business racing for the keystrokes
+        // written here.
+        w32.PIPE_TYPE_BYTE | w32.PIPE_REJECT_REMOTE_CLIENTS,
         1,
         4096,
         4096,
