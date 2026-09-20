@@ -416,7 +416,13 @@ fn startWindows(self: *Command, arena: Allocator) !void {
     };
 
     var flags: windows.DWORD = windows.CREATE_UNICODE_ENVIRONMENT;
-    if (attribute_list != null) flags |= windows.EXTENDED_STARTUPINFO_PRESENT;
+    if (attribute_list != null)
+        flags |= windows.EXTENDED_STARTUPINFO_PRESENT
+    else
+        // A console child spawned from a GUI process with plain std
+        // handles would otherwise flash its own console window; a
+        // pseudo console suppresses that implicitly.
+        flags |= windows.CREATE_NO_WINDOW;
 
     var process_information: windows.PROCESS_INFORMATION = undefined;
     if (windows.exp.kernel32.CreateProcessW(

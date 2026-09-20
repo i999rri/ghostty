@@ -24,6 +24,14 @@ const termio = @import("../termio.zig");
 const Command = @import("../Command.zig");
 const ptypkg = @import("../pty.zig");
 const Pty = ptypkg.Pty;
+
+/// WSL integration (pkg/wsl) exists only on Windows; elsewhere the
+/// bridge type is empty so the field can still be declared.
+const wsl = switch (builtin.os.tag) {
+    .windows => @import("wsl"),
+    else => void,
+};
+const WslBridgePty = if (builtin.os.tag == .windows) wsl.bridge.Pty else struct {};
 const EnvMap = std.process.Environ.Map;
 const PasswdEntry = internal_os.passwd.Entry;
 const windows = internal_os.windows;
@@ -31,6 +39,33 @@ const ProcessInfo = @import("../pty.zig").ProcessInfo;
 const compat_fd = @import("../lib/compat/fd.zig");
 
 const log = std.log.scoped(.io_exec);
+
+/// The read-thread quit pipe comes from internal_os.pipe: Win32 handles
+/// on Windows, descriptors elsewhere. std.c's close and write are not in
+/// the MSVC CRT, so the Windows side goes through Win32 directly.
+fn quitPipeClose(fd: posix.fd_t) void {
+    if (comptime builtin.os.tag == .windows) {
+        _ = windows.exp.kernel32.CloseHandle(fd);
+    } else {
+        _ = posix.system.close(fd);
+    }
+}
+
+/// Write to the quit pipe, reporting the outcome as an errno so the
+/// caller can treat a closed reader (EPIPE) as success.
+fn quitPipeWrite(fd: posix.fd_t, bytes: []const u8) posix.E {
+    if (comptime builtin.os.tag == .windows) {
+        var written: windows.DWORD = 0;
+        if (windows.exp.kernel32.WriteFile(fd, bytes.ptr, @intCast(bytes.len), &written, null) == windows.FALSE) {
+            return switch (windows.GetLastError()) {
+                .BROKEN_PIPE, .NO_DATA => .PIPE,
+                else => .IO,
+            };
+        }
+        return .SUCCESS;
+    }
+    return posix.errno(posix.system.write(fd, bytes.ptr, bytes.len));
+}
 
 /// The termios poll rate in milliseconds.
 const TERMIOS_POLL_MS = 200;
@@ -123,8 +158,8 @@ pub fn threadEnter(
     // Create our pipe that we'll use to kill our read thread.
     // pipe[0] is the read end, pipe[1] is the write end.
     const pipe = try internal_os.pipe();
-    errdefer _ = posix.system.close(pipe[0]);
-    errdefer _ = posix.system.close(pipe[1]);
+    errdefer quitPipeClose(pipe[0]);
+    errdefer quitPipeClose(pipe[1]);
 
     // Setup our stream so that we can write.
     var stream = xev.Stream.initFd(pty_fds.write);
@@ -203,7 +238,7 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     // Quit our read thread after exiting the subprocess so that
     // we don't get stuck waiting for data to stop flowing if it is
     // a particularly noisy process.
-    switch (posix.errno(posix.system.write(exec.read_thread_pipe, "x", 1))) {
+    switch (quitPipeWrite(exec.read_thread_pipe, "x")) {
         .SUCCESS => {},
 
         // EPIPE means that our read thread is closed already, which is
@@ -235,6 +270,9 @@ pub fn focusGained(
     focused: bool,
 ) !void {
     _ = self;
+
+    // termios timer is not yet implemented on Windows
+    if (comptime builtin.os.tag == .windows) return;
 
     assert(td.backend == .exec);
     const execdata = &td.backend.exec;
@@ -547,7 +585,7 @@ pub const ThreadData = struct {
     termios_mode: ptypkg.Mode = .{},
 
     pub fn deinit(self: *ThreadData, alloc: Allocator) void {
-        _ = posix.system.close(self.read_thread_pipe);
+        quitPipeClose(self.read_thread_pipe);
 
         // Clear our write pool. We know we aren't ever going to do
         // any more IO since we stop our data stream below so we can just
@@ -575,6 +613,7 @@ pub const Config = struct {
     working_directory: ?[]const u8 = null,
     resources_dir: ?[]const u8,
     term: []const u8,
+    wsl_bridge: bool = true,
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -596,6 +635,11 @@ const Subprocess = struct {
     pty: ?Pty = null,
     process: ?Process = null,
 
+    /// Set when the surface opted into the WSL pty bridge; start()
+    /// then goes through startWslBridge instead of ConPTY.
+    wsl_bridge_cfg: ?WslBridgeConfig = null,
+    bridge: ?WslBridgePty = null,
+
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
 
@@ -606,6 +650,18 @@ const Subprocess = struct {
 
         /// Flatpak DBus command
         flatpak: FlatpakHostCommand,
+    };
+
+    const WslBridgeConfig = struct {
+        /// The user's full `wsl [args]` argv; startWslBridge hands it to
+        /// wsl.Invocation.parse for the distro and in-distro command.
+        wsl_argv: []const [:0]const u8,
+        term: [:0]const u8,
+    };
+
+    const PtyFds = struct {
+        read: Pty.Fd,
+        write: Pty.Fd,
     };
 
     const ArgsFormatter = struct {
@@ -867,11 +923,30 @@ const Subprocess = struct {
         // https://github.com/ghostty-org/ghostty/discussions/7769
         if (cwd) |pwd| try env.put("PWD", pwd);
 
+        // Route WSL sessions through the pty bridge instead of ConPTY:
+        // any session whose command is `wsl`/`wsl.exe` qualifies, so a
+        // pwsh tab stays on ConPTY while a `wsl` tab bypasses it.
+        //
+        // All arena allocations must finish before the struct literal
+        // below: `.arena = arena` copies the arena by value, snapshotting
+        // its position, and any dupeZ evaluated as a sibling field would
+        // be lost from that copy — later start() allocations would then
+        // reuse and clobber those bytes. Hoisting them here keeps the
+        // copied arena's position past every allocation.
+        const wsl_bridge_cfg: ?WslBridgeConfig = if (comptime builtin.os.tag == .windows) bridge: {
+            if (!cfg.wsl_bridge or args.len == 0 or !wsl.isCommand(args[0])) break :bridge null;
+            break :bridge .{
+                .wsl_argv = args,
+                .term = try alloc.dupeZ(u8, cfg.term),
+            };
+        } else null;
+
         return .{
             .arena = arena,
             .env = env,
             .cwd = cwd,
             .args = args,
+            .wsl_bridge_cfg = wsl_bridge_cfg,
 
             .rt_pre_exec_info = cfg.rt_pre_exec_info,
             .rt_post_fork_info = cfg.rt_post_fork_info,
@@ -886,6 +961,12 @@ const Subprocess = struct {
     pub fn deinit(self: *Subprocess) void {
         self.stop();
         if (self.pty) |*pty| pty.deinit();
+        if (comptime builtin.os.tag == .windows) {
+            if (self.bridge) |*bridge| {
+                bridge.deinit();
+                self.bridge = null;
+            }
+        }
         if (self.env) |*env| env.deinit();
         self.arena.deinit();
         self.* = undefined;
@@ -893,11 +974,18 @@ const Subprocess = struct {
 
     /// Start the subprocess. If the subprocess is already started this
     /// will crash.
-    pub fn start(self: *Subprocess, alloc: Allocator) !struct {
-        read: Pty.Fd,
-        write: Pty.Fd,
-    } {
+    pub fn start(self: *Subprocess, alloc: Allocator) !PtyFds {
         assert(self.pty == null and self.process == null);
+
+        // A WSL bridge session has no ConPTY at all: the pty lives
+        // inside the distro and wsl.exe is both pipe and process. A
+        // host that does not ship the in-distro binary gets the plain
+        // ConPTY session instead of a broken one.
+        if (comptime builtin.os.tag == .windows) {
+            if (self.wsl_bridge_cfg) |bcfg| {
+                if (try self.startWslBridge(alloc, bcfg)) |fds| return fds;
+            }
+        }
 
         // This function is funny because on POSIX systems it can
         // fail in the forked process. This is flipped to true if
@@ -1093,6 +1181,114 @@ const Subprocess = struct {
         };
     }
 
+    /// Start a session through the WSL pty bridge instead of ConPTY
+    /// (GhosttyWin32#206). wsl.exe runs ghostty-wsl-bridge, which owns
+    /// a real Linux pty; see pkg/wsl/bridge/Pty.zig for the pipe layout.
+    /// Returns null, without touching any state, when the in-distro
+    /// binary is not installed so the caller can fall back to ConPTY.
+    fn startWslBridge(
+        self: *Subprocess,
+        alloc: Allocator,
+        bcfg: WslBridgeConfig,
+    ) !?PtyFds {
+        const arena = self.arena.allocator();
+
+        // The in-distro binary ships next to the host executable; the
+        // env var override serves development builds running from
+        // elsewhere.
+        const helper_path: []u8 = helper: {
+            if (self.env) |*env| {
+                if (env.get("GHOSTTY_WSL_BRIDGE")) |v| break :helper try arena.dupe(u8, v);
+            }
+            const exe_dir = try std.process.executableDirPathAlloc(global.io(), arena);
+            break :helper try std.fs.path.join(arena, &.{ exe_dir, "ghostty-wsl-bridge" });
+        };
+        std.Io.Dir.cwd().access(global.io(), helper_path, .{}) catch |err| {
+            log.warn("WSL bridge binary not found, running wsl under ConPTY path={s} err={}", .{ helper_path, err });
+            return null;
+        };
+        const size: WslBridgePty.winsize = .{
+            .ws_row = std.math.cast(u16, self.grid_size.rows) orelse std.math.maxInt(u16),
+            .ws_col = std.math.cast(u16, self.grid_size.columns) orelse std.math.maxInt(u16),
+            .ws_xpixel = std.math.cast(u16, self.screen_size.width) orelse std.math.maxInt(u16),
+            .ws_ypixel = std.math.cast(u16, self.screen_size.height) orelse std.math.maxInt(u16),
+        };
+        self.bridge = try WslBridgePty.open(global.io(), size);
+        const bridge = &(self.bridge.?);
+        errdefer {
+            bridge.deinit();
+            self.bridge = null;
+        }
+
+        const launch: wsl.bridge.Launch = .{
+            .helper_path = helper_path,
+            .invocation = wsl.Invocation.parse(bcfg.wsl_argv),
+            .cols = size.ws_col,
+            .rows = size.ws_row,
+            .term = bcfg.term,
+        };
+        const args = try launch.argv(arena);
+
+        const cwd: ?[:0]const u8 = if (self.cwd) |proposed| cwd: {
+            if (std.Io.Dir.cwd().access(global.io(), proposed, .{})) {
+                break :cwd proposed;
+            } else |err| {
+                log.warn("cannot access cwd, ignoring: {}", .{err});
+                break :cwd null;
+            }
+        } else null;
+
+        var cmd: Command = .{
+            .path = args[0],
+            .args = args,
+            .env = if (self.env) |*env| env else null,
+            .cwd = cwd,
+            // Anonymous pipes are synchronous handles.
+            .stdin = .{ .handle = bridge.child_stdin, .flags = .{ .nonblocking = false } },
+            .stdout = .{ .handle = bridge.child_stdout, .flags = .{ .nonblocking = false } },
+            // stdout is a frame stream now, so diagnostics get their own
+            // pipe; the bridge relays them into the terminal.
+            .stderr = .{ .handle = bridge.child_stderr, .flags = .{ .nonblocking = false } },
+            .pseudo_console = null,
+            .os_pre_exec = null,
+            .rt_pre_exec = if (comptime @hasDecl(apprt.runtime, "pre_exec")) apprt.runtime.pre_exec.preExec else null,
+            .rt_pre_exec_info = self.rt_pre_exec_info,
+            .rt_post_fork = if (comptime @hasDecl(apprt.runtime, "post_fork")) apprt.runtime.post_fork.postFork else null,
+            .rt_post_fork_info = self.rt_post_fork_info,
+            .data = self,
+        };
+        try cmd.start(alloc);
+        errdefer killCommand(&cmd) catch |err| {
+            log.warn("error killing command during cleanup err={}", .{err});
+        };
+        log.info("started WSL bridge session pid={?}", .{cmd.pid});
+        self.process = .{ .fork_exec = cmd };
+
+        // Tie wsl.exe's lifetime to ours so a crash can't orphan it.
+        if (cmd.pid) |pid| bridge.superviseProcess(pid);
+
+        bridge.closeChildSide();
+        try bridge.startPump();
+
+        // The command line only carried cols/rows; deliver the pixel
+        // sizes too now that frames flow.
+        bridge.setSize(bridge.size) catch |err| {
+            log.warn("error sending initial size to WSL bridge err={}", .{err});
+        };
+
+        // Successful start: drop state only needed for spawning, same
+        // as the ConPTY path.
+        if (self.env) |*env| {
+            env.deinit();
+            self.env = null;
+        }
+
+        return .{
+            .read = bridge.out_pipe,
+            .write = bridge.in_pipe,
+        };
+    }
+
     /// This should be called after fork but before exec in the child process.
     /// To repeat: this function RUNS IN THE FORKED CHILD PROCESS before
     /// exec is called; it does NOT run in the main Ghostty process.
@@ -1139,6 +1335,17 @@ const Subprocess = struct {
     ) !void {
         self.grid_size = grid_size;
         self.screen_size = screen_size;
+
+        if (comptime builtin.os.tag == .windows) {
+            if (self.bridge) |*bridge| {
+                return try bridge.setSize(.{
+                    .ws_row = std.math.cast(u16, grid_size.rows) orelse std.math.maxInt(u16),
+                    .ws_col = std.math.cast(u16, grid_size.columns) orelse std.math.maxInt(u16),
+                    .ws_xpixel = std.math.cast(u16, screen_size.width) orelse std.math.maxInt(u16),
+                    .ws_ypixel = std.math.cast(u16, screen_size.height) orelse std.math.maxInt(u16),
+                });
+            }
+        }
 
         if (self.pty) |*pty| {
             // It is theoretically possible for the grid or screen size to
@@ -1262,6 +1469,15 @@ const Subprocess = struct {
     pub fn getProcessInfo(self: *Subprocess, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
         const pty = &(self.pty orelse return null);
         return pty.getProcessInfo(info);
+    }
+
+    /// The foreground process name of a WSL bridge session, copied into
+    /// `out`. Returns 0 for non-bridge sessions: their foreground
+    /// process is a Windows pid the host can resolve by itself.
+    pub fn foregroundProcessName(self: *Subprocess, out: []u8) usize {
+        if (comptime builtin.os.tag != .windows) return 0;
+        var bridge = &(self.bridge orelse return 0);
+        return bridge.foregroundName(out);
     }
 };
 
@@ -1776,7 +1992,7 @@ pub const ReadThread = struct {
 
     fn threadMainWindows(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t) void {
         // Always close our end of the pipe when we exit.
-        defer _ = posix.system.close(quit);
+        defer quitPipeClose(quit);
 
         // Setup our crash metadata
         crash.sentry.thread_state = .{
@@ -1794,6 +2010,18 @@ pub const ReadThread = struct {
                     switch (err) {
                         // Check for a quit signal
                         .OPERATION_ABORTED => break,
+
+                        // The write side is gone: the child exited (a
+                        // WSL bridge session) or the pty was torn down.
+                        // Wait for the quit signal so surface teardown
+                        // stays in charge of shutdown ordering.
+                        .BROKEN_PIPE => {
+                            log.info("pty pipe closed, read thread waiting for quit", .{});
+                            var quit_buf: [1]u8 = undefined;
+                            var quit_n: windows.DWORD = 0;
+                            _ = windows.exp.kernel32.ReadFile(quit, &quit_buf, 1, &quit_n, null);
+                            return;
+                        },
 
                         else => {
                             log.err("io reader error err={}", .{err});
@@ -2061,6 +2289,11 @@ fn appendEnvAlways(
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Exec, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.subprocess.getProcessInfo(info);
+}
+
+/// See Subprocess.foregroundProcessName.
+pub fn foregroundProcessName(self: *Exec, out: []u8) usize {
+    return self.subprocess.foregroundProcessName(out);
 }
 
 test "execCommand darwin: shell command" {
