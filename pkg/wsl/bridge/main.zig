@@ -16,10 +16,19 @@ pub const Pty = @import("Pty.zig");
 pub const protocol = @import("protocol.zig");
 pub const winsize = Pty.winsize;
 
+/// Whether a path names the binary inside the distribution rather than
+/// on a Windows drive. An absolute Linux path is the only form the
+/// distribution has in common with nothing on this side: a Windows path
+/// is a drive letter or a UNC root.
+pub fn isDistroPath(path: []const u8) bool {
+    return path.len > 0 and path[0] == '/';
+}
+
 /// How to start the in-distro half through wsl.exe.
 pub const Launch = struct {
-    /// Windows path of the in-distro binary. Backslashes are accepted;
-    /// wslpath receives it with forward slashes.
+    /// Where the in-distro binary is. A path inside the distribution is
+    /// used as it stands; a Windows path is translated by wslpath, and
+    /// backslashes are accepted there.
     helper_path: []const u8,
     invocation: wsl.Invocation,
     /// Initial pty size; the pixel sizes follow over a resize frame.
@@ -28,10 +37,10 @@ pub const Launch = struct {
     /// TERM inside the distro.
     term: []const u8,
 
-    /// The wsl.exe command line. The binary's Windows path is translated
-    /// to a Linux one inside the same invocation ($0), so no extra
-    /// process is spawned for wslpath; "$@" forwards the in-distro
-    /// command, which the binary execs directly (none = login shell).
+    /// The wsl.exe command line. A Windows path is translated to a Linux
+    /// one inside the same invocation ($0), so no extra process is
+    /// spawned for wslpath; "$@" forwards the in-distro command, which
+    /// the binary execs directly (none = login shell).
     pub fn argv(self: Launch, alloc: Allocator) ![]const [:0]const u8 {
         var args: std.ArrayList([:0]const u8) = .empty;
         try args.append(alloc, "wsl.exe");
@@ -42,15 +51,22 @@ pub const Launch = struct {
         try args.append(alloc, "--exec");
         try args.append(alloc, "/bin/sh");
         try args.append(alloc, "-c");
+        const in_distro = isDistroPath(self.helper_path);
         try args.append(alloc, try std.fmt.allocPrintSentinel(
             alloc,
-            "exec \"$(wslpath -a \"$0\")\" --cols {d} --rows {d} --term '{s}' \"$@\"",
-            .{ self.cols, self.rows, self.term },
+            "exec {s} --cols {d} --rows {d} --term '{s}' \"$@\"",
+            .{
+                if (in_distro) "\"$0\"" else "\"$(wslpath -a \"$0\")\"",
+                self.cols,
+                self.rows,
+                self.term,
+            },
             0,
         ));
 
         const path = try alloc.dupeZ(u8, self.helper_path);
-        std.mem.replaceScalar(u8, path, '\\', '/');
+        // Only a Windows path needs the separators turned around.
+        if (!in_distro) std.mem.replaceScalar(u8, path, '\\', '/');
         try args.append(alloc, path);
 
         if (self.invocation.command.len > 0) {
@@ -103,6 +119,32 @@ test "Launch.argv" {
     try testing.expectEqual(@as(usize, 6), bare.len);
     try testing.expectEqualStrings("--exec", bare[1]);
     try testing.expectEqualStrings("C:/app/ghostty-wsl-bridge", bare[5]);
+
+    // Installed in the distribution: wslpath has nothing to translate,
+    // and the path goes through as it stands.
+    const in_distro = try (Launch{
+        .helper_path = "/usr/local/bin/ghostty-wsl-bridge",
+        .invocation = .{},
+        .cols = 80,
+        .rows = 24,
+        .term = "xterm-ghostty",
+    }).argv(alloc);
+    try testing.expectEqualStrings(
+        "exec \"$0\" --cols 80 --rows 24 --term 'xterm-ghostty' \"$@\"",
+        in_distro[4],
+    );
+    try testing.expectEqualStrings("/usr/local/bin/ghostty-wsl-bridge", in_distro[5]);
+}
+
+test "isDistroPath" {
+    const testing = std.testing;
+    try testing.expect(isDistroPath("/usr/local/bin/ghostty-wsl-bridge"));
+    try testing.expect(isDistroPath("/home/u/.local/bin/ghostty-wsl-bridge"));
+    try testing.expect(!isDistroPath("C:\\app\\ghostty-wsl-bridge"));
+    try testing.expect(!isDistroPath("C:/app/ghostty-wsl-bridge"));
+    // A UNC root reaches a Windows share, not the distribution.
+    try testing.expect(!isDistroPath("\\\\server\\share\\ghostty-wsl-bridge"));
+    try testing.expect(!isDistroPath(""));
 }
 
 test {
