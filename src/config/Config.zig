@@ -3870,10 +3870,18 @@ term: []const u8 = "xterm-ghostty",
 /// in-distro command are taken from the `wsl` command itself, e.g.
 /// `wsl -d NixOS` or `wsl -d NixOS -- htop`.
 ///
-/// Set to false to run `wsl` under ConPTY like any other command.
+/// The relay is a separate binary, `ghostty-wsl-bridge`, which you
+/// install inside the distribution yourself; the host does not carry it,
+/// because a file it shipped would live where the user cannot write and
+/// so could not be run from the distribution at all. It is started by
+/// name, so it has to be somewhere on the distribution's `PATH` as the
+/// session sees it. A session cannot start without it: this is off by
+/// default, and turning it on without the binary ends the session with
+/// `ghostty-wsl-bridge: not found` rather than quietly going back to
+/// ConPTY.
 ///
 /// Windows only.
-@"wsl-bridge": bool = true,
+@"wsl-bridge": bool = false,
 
 /// String to send when we receive `ENQ` (`0x05`) from the command that we are
 /// running. Defaults to an empty string if not set.
