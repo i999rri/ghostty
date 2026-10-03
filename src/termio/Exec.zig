@@ -1193,9 +1193,10 @@ const Subprocess = struct {
     ) !?PtyFds {
         const arena = self.arena.allocator();
 
-        // The in-distro binary ships next to the host executable; the
-        // env var override serves development builds running from
-        // elsewhere.
+        // GHOSTTY_WSL_BRIDGE names the binary when it is installed
+        // somewhere of the user's choosing; otherwise it is looked for
+        // next to the host executable, where a host that ships it puts
+        // it.
         const helper_path: []u8 = helper: {
             if (self.env) |*env| {
                 if (env.get("GHOSTTY_WSL_BRIDGE")) |v| break :helper try arena.dupe(u8, v);
@@ -1203,10 +1204,19 @@ const Subprocess = struct {
             const exe_dir = try std.process.executableDirPathAlloc(global.io(), arena);
             break :helper try std.fs.path.join(arena, &.{ exe_dir, "ghostty-wsl-bridge" });
         };
-        std.Io.Dir.cwd().access(global.io(), helper_path, .{}) catch |err| {
-            log.warn("WSL bridge binary not found, running wsl under ConPTY path={s} err={}", .{ helper_path, err });
-            return null;
-        };
+
+        // A path inside the distribution is the better place for it:
+        // the binary runs there, and a file on a Windows drive is
+        // exposed through DrvFs without the execute bit unless the user
+        // owns it. Such a path cannot be checked from this side, so a
+        // wrong one is reported by the shell in the surface instead of
+        // falling back here.
+        if (!wsl.bridge.isDistroPath(helper_path)) {
+            std.Io.Dir.cwd().access(global.io(), helper_path, .{}) catch |err| {
+                log.warn("WSL bridge binary not found, running wsl under ConPTY path={s} err={}", .{ helper_path, err });
+                return null;
+            };
+        }
         const size: WslBridgePty.winsize = .{
             .ws_row = std.math.cast(u16, self.grid_size.rows) orelse std.math.maxInt(u16),
             .ws_col = std.math.cast(u16, self.grid_size.columns) orelse std.math.maxInt(u16),
