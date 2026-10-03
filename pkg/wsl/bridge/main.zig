@@ -40,6 +40,12 @@ pub const Launch = struct {
             try args.append(alloc, "--distribution");
             try args.append(alloc, d);
         }
+        // wsl.exe sets the directory before it runs anything, so the
+        // helper and the shell it starts both land there.
+        if (self.invocation.directory) |dir| {
+            try args.append(alloc, "--cd");
+            try args.append(alloc, dir);
+        }
         try args.append(alloc, "--exec");
         try args.append(alloc, "/bin/sh");
         try args.append(alloc, "-c");
@@ -107,6 +113,18 @@ test "Launch.argv" {
         bare[4],
     );
     try testing.expectEqualStrings("ghostty-wsl-bridge", bare[5]);
+
+    // --cd is wsl.exe's own, so it goes before --exec and the helper
+    // never sees it.
+    const cd = try (Launch{
+        .invocation = .{ .directory = "~" },
+        .cols = 80,
+        .rows = 24,
+        .term = "xterm-ghostty",
+    }).argv(alloc);
+    try testing.expectEqualStrings("--cd", cd[1]);
+    try testing.expectEqualStrings("~", cd[2]);
+    try testing.expectEqualStrings("--exec", cd[3]);
 }
 
 test {
