@@ -978,13 +978,9 @@ const Subprocess = struct {
         assert(self.pty == null and self.process == null);
 
         // A WSL bridge session has no ConPTY at all: the pty lives
-        // inside the distro and wsl.exe is both pipe and process. A
-        // host that does not ship the in-distro binary gets the plain
-        // ConPTY session instead of a broken one.
+        // inside the distro and wsl.exe is both pipe and process.
         if (comptime builtin.os.tag == .windows) {
-            if (self.wsl_bridge_cfg) |bcfg| {
-                if (try self.startWslBridge(alloc, bcfg)) |fds| return fds;
-            }
+            if (self.wsl_bridge_cfg) |bcfg| return try self.startWslBridge(alloc, bcfg);
         }
 
         // This function is funny because on POSIX systems it can
@@ -1184,39 +1180,17 @@ const Subprocess = struct {
     /// Start a session through the WSL pty bridge instead of ConPTY
     /// (GhosttyWin32#206). wsl.exe runs ghostty-wsl-bridge, which owns
     /// a real Linux pty; see pkg/wsl/bridge/Pty.zig for the pipe layout.
-    /// Returns null, without touching any state, when the in-distro
-    /// binary is not installed so the caller can fall back to ConPTY.
+    /// The binary is started by name and is the user's to install, so
+    /// whether it is there cannot be answered from this side without
+    /// asking the distribution. It is not asked: `wsl-bridge` is off
+    /// unless someone turned it on, and someone who turned it on is
+    /// better served by the shell saying `not found` in the surface
+    /// than by a silent ConPTY session that behaves differently.
     fn startWslBridge(
         self: *Subprocess,
         alloc: Allocator,
         bcfg: WslBridgeConfig,
-    ) !?PtyFds {
-        const arena = self.arena.allocator();
-
-        // GHOSTTY_WSL_BRIDGE names the binary when it is installed
-        // somewhere of the user's choosing; otherwise it is looked for
-        // next to the host executable, where a host that ships it puts
-        // it.
-        const helper_path: []u8 = helper: {
-            if (self.env) |*env| {
-                if (env.get("GHOSTTY_WSL_BRIDGE")) |v| break :helper try arena.dupe(u8, v);
-            }
-            const exe_dir = try std.process.executableDirPathAlloc(global.io(), arena);
-            break :helper try std.fs.path.join(arena, &.{ exe_dir, "ghostty-wsl-bridge" });
-        };
-
-        // A path inside the distribution is the better place for it:
-        // the binary runs there, and a file on a Windows drive is
-        // exposed through DrvFs without the execute bit unless the user
-        // owns it. Such a path cannot be checked from this side, so a
-        // wrong one is reported by the shell in the surface instead of
-        // falling back here.
-        if (!wsl.bridge.isDistroPath(helper_path)) {
-            std.Io.Dir.cwd().access(global.io(), helper_path, .{}) catch |err| {
-                log.warn("WSL bridge binary not found, running wsl under ConPTY path={s} err={}", .{ helper_path, err });
-                return null;
-            };
-        }
+    ) !PtyFds {
         const size: WslBridgePty.winsize = .{
             .ws_row = std.math.cast(u16, self.grid_size.rows) orelse std.math.maxInt(u16),
             .ws_col = std.math.cast(u16, self.grid_size.columns) orelse std.math.maxInt(u16),
@@ -1230,8 +1204,8 @@ const Subprocess = struct {
             self.bridge = null;
         }
 
+        const arena = self.arena.allocator();
         const launch: wsl.bridge.Launch = .{
-            .helper_path = helper_path,
             .invocation = wsl.Invocation.parse(bcfg.wsl_argv),
             .cols = size.ws_col,
             .rows = size.ws_row,
