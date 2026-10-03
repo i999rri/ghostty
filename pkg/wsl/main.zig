@@ -18,13 +18,18 @@ pub fn isCommand(program: []const u8) bool {
 /// session in the distro.
 pub const Invocation = struct {
     distribution: ?[:0]const u8 = null,
+    /// Where the session starts, as wsl.exe reads `--cd`: `~` is the
+    /// Linux home, a leading `/` an absolute Linux path, anything else
+    /// an absolute Windows path.
+    directory: ?[:0]const u8 = null,
     /// The in-distro command; empty means the login shell.
     command: []const [:0]const u8 = &.{},
 
     /// Re-interpret the user's `wsl [args]` (argv[0] is wsl itself): a
-    /// leading `-d`/`--distribution NAME` selects the distro and the rest
-    /// is the in-distro command. A lone `~` (from `wsl ~`) just means the
-    /// home directory, i.e. a plain login shell, so it carries no command.
+    /// leading `-d`/`--distribution NAME` selects the distro, `--cd DIR`
+    /// the starting directory, and the rest is the in-distro command. A
+    /// lone `~` (from `wsl ~`) just means the home directory, i.e. a
+    /// plain login shell, so it carries no command.
     pub fn parse(argv: []const [:0]const u8) Invocation {
         var result: Invocation = .{};
         var i: usize = 1;
@@ -35,11 +40,16 @@ pub const Invocation = struct {
             {
                 result.distribution = argv[i + 1];
                 i += 1;
+            } else if (std.mem.eql(u8, arg, "--cd") and i + 1 < argv.len) {
+                result.directory = argv[i + 1];
+                i += 1;
             } else if (std.mem.eql(u8, arg, "--")) {
                 result.command = argv[i + 1 ..];
                 break;
             } else if (std.mem.eql(u8, arg, "~")) {
-                // login shell in home; nothing to run
+                // wsl.exe reads a lone `~` as `--cd ~`: a login shell in
+                // the Linux home, with nothing to run.
+                result.directory = arg;
             } else {
                 result.command = argv[i..];
                 break;
@@ -65,8 +75,12 @@ test "Invocation.parse" {
     try testing.expectEqual(@as(?[:0]const u8, null), bare.distribution);
     try testing.expectEqual(@as(usize, 0), bare.command.len);
 
+    // A lone `~` is wsl.exe's shorthand for --cd ~, so it has to reach
+    // wsl.exe as one; dropping it leaves the session in the Windows
+    // working directory instead of the Linux home.
     const home = Invocation.parse(&[_][:0]const u8{ "wsl", "-d", "NixOS", "~" });
     try testing.expectEqualStrings("NixOS", home.distribution.?);
+    try testing.expectEqualStrings("~", home.directory.?);
     try testing.expectEqual(@as(usize, 0), home.command.len);
 
     const explicit = Invocation.parse(&[_][:0]const u8{ "wsl", "--distribution", "NixOS", "--", "htop", "-d", "5" });
@@ -80,6 +94,23 @@ test "Invocation.parse" {
     const implicit = Invocation.parse(&[_][:0]const u8{ "wsl", "htop", "-d", "5" });
     try testing.expectEqual(@as(?[:0]const u8, null), implicit.distribution);
     try testing.expectEqual(@as(usize, 3), implicit.command.len);
+
+    // --cd takes the next token, whatever shape wsl.exe reads it as, and
+    // leaves the session a login shell.
+    const cd = Invocation.parse(&[_][:0]const u8{ "wsl", "--cd", "/srv/app" });
+    try testing.expectEqualStrings("/srv/app", cd.directory.?);
+    try testing.expectEqual(@as(usize, 0), cd.command.len);
+
+    const both = Invocation.parse(&[_][:0]const u8{ "wsl", "-d", "NixOS", "--cd", "~", "--", "htop" });
+    try testing.expectEqualStrings("NixOS", both.distribution.?);
+    try testing.expectEqualStrings("~", both.directory.?);
+    try testing.expectEqual(@as(usize, 1), both.command.len);
+
+    // A trailing --cd has nothing to take, so it starts the command
+    // rather than swallowing the end of the line.
+    const dangling = Invocation.parse(&[_][:0]const u8{ "wsl", "--cd" });
+    try testing.expectEqual(@as(?[:0]const u8, null), dangling.directory);
+    try testing.expectEqual(@as(usize, 1), dangling.command.len);
 }
 
 test {
