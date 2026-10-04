@@ -72,6 +72,7 @@ pub const FALSE: windows.BOOL = .fromBool(false);
 pub const TRUE: windows.BOOL = .fromBool(true);
 
 // Bit-field and enum constant values
+pub const CREATE_NO_WINDOW = 0x08000000;
 pub const CREATE_UNICODE_ENVIRONMENT = 0x00000400;
 pub const DELETE = 0x00010000;
 pub const ERROR_SUCCESS = 0;
@@ -99,6 +100,7 @@ pub const MEM_RESERVE = 0x2000;
 pub const OPEN_EXISTING = 3; // Known as FILE_OPEN in Windows docs
 pub const PAGE_READWRITE = 0x04;
 pub const PIPE_ACCESS_OUTBOUND = 0x00000002;
+pub const PIPE_REJECT_REMOTE_CLIENTS = 0x00000008;
 pub const PIPE_TYPE_BYTE = 0x00000000;
 pub const PROC_THREAD_ATTRIBUTE_ADDITIVE = 0x00040000;
 pub const PROC_THREAD_ATTRIBUTE_INPUT = 0x00020000;
@@ -191,6 +193,25 @@ pub const exp = struct {
             lpStartupInfo: *STARTUPINFOW,
             lpProcessInformation: *PROCESS_INFORMATION,
         ) callconv(.winapi) BOOL;
+        /// The DirectX renderer's native render loop paces itself with
+        /// these; see renderer/Thread.zig.
+        pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+        pub extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
+        pub extern "kernel32" fn CreateWaitableTimerExW(
+            lpTimerAttributes: ?*SECURITY_ATTRIBUTES,
+            lpTimerName: ?[*:0]const u16,
+            dwFlags: DWORD,
+            dwDesiredAccess: DWORD,
+        ) callconv(.winapi) ?HANDLE;
+        pub extern "kernel32" fn SetWaitableTimerEx(
+            hTimer: HANDLE,
+            lpDueTime: *const LARGE_INTEGER,
+            lPeriod: i32,
+            pfnCompletionRoutine: ?*anyopaque,
+            lpArgToCompletionRoutine: ?*anyopaque,
+            WakeContext: ?*anyopaque,
+            TolerableDelay: u32,
+        ) callconv(.winapi) BOOL;
         /// https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getcomputernamea
         pub extern "kernel32" fn GetComputerNameA(
             lpBuffer: LPSTR,
@@ -265,6 +286,13 @@ pub const exp = struct {
             lpBuffer: LPVOID,
             nNumberOfBytesToRead: DWORD,
             lpNumberOfBytesRead: ?*DWORD,
+            lpOverlapped: ?*OVERLAPPED,
+        ) callconv(.winapi) BOOL;
+        pub extern "kernel32" fn WriteFile(
+            hFile: HANDLE,
+            lpBuffer: [*]const u8,
+            nNumberOfBytesToWrite: DWORD,
+            lpNumberOfBytesWritten: ?*DWORD,
             lpOverlapped: ?*OVERLAPPED,
         ) callconv(.winapi) BOOL;
         /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew
@@ -356,6 +384,21 @@ pub const exp = struct {
         ) callconv(.winapi) NTSTATUS;
         pub extern "ntdll" fn RtlWakeAddressSingle(Address: *const anyopaque) callconv(.winapi) void;
         pub extern "ntdll" fn RtlWakeAddressAll(Address: *const anyopaque) callconv(.winapi) void;
+    };
+
+    // Used by the DirectX renderer (renderer/DirectX.zig, renderer/Thread.zig).
+    pub const RECT = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+
+    /// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (Windows 10 1803+)
+    pub const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: DWORD = 0x00000002;
+
+    pub const user32 = struct {
+        pub extern "user32" fn GetClientRect(?*anyopaque, *RECT) callconv(.winapi) i32;
+    };
+
+    pub const winmm = struct {
+        pub extern "winmm" fn timeBeginPeriod(u32) callconv(.winapi) u32;
+        pub extern "winmm" fn timeEndPeriod(u32) callconv(.winapi) u32;
     };
 };
 

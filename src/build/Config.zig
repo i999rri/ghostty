@@ -29,6 +29,7 @@ font_backend: FontBackend = .freetype,
 
 /// Feature flags
 x11: bool = false,
+directx_debug_layer: bool = false,
 wayland: bool = false,
 sentry: bool = true,
 simd: bool = true,
@@ -208,6 +209,12 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
 
     //---------------------------------------------------------------
     // Feature Flags
+
+    config.directx_debug_layer = b.option(
+        bool,
+        "directx-debug-layer",
+        "Create D3D11 devices with the debug layer and verbose traces (DirectX renderer only). Needs the Graphics Tools optional feature at runtime.",
+    ) orelse false;
 
     config.flatpak = b.option(
         bool,
@@ -662,6 +669,7 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
     step.addOption(bool, "flatpak", self.flatpak);
     step.addOption(bool, "snap", self.snap);
     step.addOption(bool, "x11", self.x11);
+    step.addOption(bool, "directx_debug_layer", self.directx_debug_layer);
     step.addOption(bool, "wayland", self.wayland);
     step.addOption(bool, "sentry", self.sentry);
     step.addOption(bool, "simd", self.simd);

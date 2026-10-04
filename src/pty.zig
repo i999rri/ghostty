@@ -373,7 +373,11 @@ const WindowsPty = struct {
             windows.PIPE_ACCESS_OUTBOUND |
                 windows.FILE_FLAG_FIRST_PIPE_INSTANCE |
                 windows.FILE_FLAG_OVERLAPPED,
-            windows.PIPE_TYPE_BYTE,
+            // The pipe stands in for an anonymous one and is connected
+            // below, by this process. Named pipes take SMB clients
+            // unless told otherwise, and nothing off this machine has
+            // any business racing for the keystrokes written here.
+            windows.PIPE_TYPE_BYTE | windows.PIPE_REJECT_REMOTE_CLIENTS,
             1,
             4096,
             4096,

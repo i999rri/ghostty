@@ -1,0 +1,8 @@
+.{
+    .name = .wsl,
+    .version = "0.1.0",
+    .fingerprint = 0xeee9a0819b501112,
+    .paths = .{""},
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+}

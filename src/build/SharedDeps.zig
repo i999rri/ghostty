@@ -486,6 +486,45 @@ pub fn add(
         else
             &.{},
     });
+    // DirectX 11 renderer C implementation
+    if (step.rootModuleTarget().os.tag == .windows) {
+        // The D3D debug layer and its traces are an explicit opt-in
+        // (GHOSTTY_D3D_DEBUG from -Ddirectx-debug-layer), never derived
+        // from the optimize mode: a build that carries the layer needs
+        // the Graphics Tools feature installed to create a device at
+        // all, so it must not slip into a release. NDEBUG follows the
+        // usual C rule and is unrelated to the layer.
+        const d3d11_flags: []const []const u8 = flags: {
+            const release = optimize != .Debug;
+            const layer = self.config.directx_debug_layer;
+            if (release and layer) break :flags &.{ "-DNDEBUG", "-DGHOSTTY_D3D_DEBUG" };
+            if (release) break :flags &.{"-DNDEBUG"};
+            if (layer) break :flags &.{"-DGHOSTTY_D3D_DEBUG"};
+            break :flags &.{};
+        };
+        step.root_module.addCSourceFiles(.{
+            .files = &.{"src/renderer/directx/d3d11_impl.c"},
+            .flags = d3d11_flags,
+        });
+        step.root_module.addIncludePath(b.path("src/renderer/directx"));
+
+        // TranslateC for d3d11_impl.h — type-safe C imports (no @cImport)
+        const d3d11_c = b.addTranslateC(.{
+            .root_source_file = b.path("src/renderer/directx/d3d11_impl.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        step.root_module.addImport("d3d11-c", d3d11_c.createModule());
+
+        // WSL direct pty bridge, Windows side. The in-distro half is a
+        // separate artifact installed by the root build.
+        if (b.lazyDependency("wsl", .{
+            .target = target,
+            .optimize = optimize,
+        })) |dep| {
+            step.root_module.addImport("wsl", dep.module("wsl"));
+        }
+    }
     if (step.rootModuleTarget().os.tag == .linux) {
         step.root_module.addIncludePath(b.path("src/apprt/gtk"));
     }
@@ -658,15 +697,15 @@ pub fn add(
         }
     }
 
+    // Statically compile glad (needed for both exe and lib/DLL builds)
+    step.root_module.addIncludePath(b.path("vendor/glad/include/"));
+    step.root_module.addCSourceFile(.{
+        .file = b.path("vendor/glad/src/gl.c"),
+        .flags = &.{},
+    });
+
     // If we're building an exe then we have additional dependencies.
     if (step.kind != .lib) {
-        // We always statically compile glad
-        step.root_module.addIncludePath(b.path("vendor/glad/include/"));
-        step.root_module.addCSourceFile(.{
-            .file = b.path("vendor/glad/src/gl.c"),
-            .flags = &.{},
-        });
-
         // When we're targeting flatpak we ALWAYS link GTK so we
         // get access to glib for dbus.
         if (self.config.flatpak) {
