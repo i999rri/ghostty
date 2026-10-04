@@ -22,14 +22,17 @@ pub const Invocation = struct {
     /// Linux home, a leading `/` an absolute Linux path, anything else
     /// an absolute Windows path.
     directory: ?[:0]const u8 = null,
+    /// Who the session runs as, from `--user`/`-u`.
+    user: ?[:0]const u8 = null,
     /// The in-distro command; empty means the login shell.
     command: []const [:0]const u8 = &.{},
 
     /// Re-interpret the user's `wsl [args]` (argv[0] is wsl itself): a
     /// leading `-d`/`--distribution NAME` selects the distro, `--cd DIR`
-    /// the starting directory, and the rest is the in-distro command. A
-    /// lone `~` (from `wsl ~`) just means the home directory, i.e. a
-    /// plain login shell, so it carries no command.
+    /// the starting directory, `-u`/`--user NAME` who it runs as, and
+    /// the rest is the in-distro command. A lone `~` (from `wsl ~`) just
+    /// means the home directory, i.e. a plain login shell, so it carries
+    /// no command.
     pub fn parse(argv: []const [:0]const u8) Invocation {
         var result: Invocation = .{};
         var i: usize = 1;
@@ -42,6 +45,11 @@ pub const Invocation = struct {
                 i += 1;
             } else if (std.mem.eql(u8, arg, "--cd") and i + 1 < argv.len) {
                 result.directory = argv[i + 1];
+                i += 1;
+            } else if ((std.mem.eql(u8, arg, "-u") or std.mem.eql(u8, arg, "--user")) and
+                i + 1 < argv.len)
+            {
+                result.user = argv[i + 1];
                 i += 1;
             } else if (std.mem.eql(u8, arg, "--")) {
                 result.command = argv[i + 1 ..];
@@ -101,10 +109,21 @@ test "Invocation.parse" {
     try testing.expectEqualStrings("/srv/app", cd.directory.?);
     try testing.expectEqual(@as(usize, 0), cd.command.len);
 
-    const both = Invocation.parse(&[_][:0]const u8{ "wsl", "-d", "NixOS", "--cd", "~", "--", "htop" });
+    const both = Invocation.parse(&[_][:0]const u8{ "wsl", "-d", "NixOS", "--cd", "~", "-u", "root", "--", "htop" });
     try testing.expectEqualStrings("NixOS", both.distribution.?);
     try testing.expectEqualStrings("~", both.directory.?);
+    try testing.expectEqualStrings("root", both.user.?);
     try testing.expectEqual(@as(usize, 1), both.command.len);
+
+    // Both spellings of the user, and a trailing one with nothing to
+    // take starts the command rather than swallowing the end.
+    const short = Invocation.parse(&[_][:0]const u8{ "wsl", "-u", "root" });
+    try testing.expectEqualStrings("root", short.user.?);
+    const long = Invocation.parse(&[_][:0]const u8{ "wsl", "--user", "root" });
+    try testing.expectEqualStrings("root", long.user.?);
+    const danglingUser = Invocation.parse(&[_][:0]const u8{ "wsl", "--user" });
+    try testing.expectEqual(@as(?[:0]const u8, null), danglingUser.user);
+    try testing.expectEqual(@as(usize, 1), danglingUser.command.len);
 
     // A trailing --cd has nothing to take, so it starts the command
     // rather than swallowing the end of the line.

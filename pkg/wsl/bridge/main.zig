@@ -46,6 +46,12 @@ pub const Launch = struct {
             try args.append(alloc, "--cd");
             try args.append(alloc, dir);
         }
+        // Likewise the user: the helper runs as them, so the shell it
+        // starts does too.
+        if (self.invocation.user) |user| {
+            try args.append(alloc, "--user");
+            try args.append(alloc, user);
+        }
         try args.append(alloc, "--exec");
         try args.append(alloc, "/bin/sh");
         try args.append(alloc, "-c");
@@ -125,6 +131,19 @@ test "Launch.argv" {
     try testing.expectEqualStrings("--cd", cd[1]);
     try testing.expectEqualStrings("~", cd[2]);
     try testing.expectEqualStrings("--exec", cd[3]);
+
+    // wsl.exe's own options keep their order and stay ahead of --exec,
+    // so the helper is handed none of them.
+    const who = try (Launch{
+        .invocation = .{ .distribution = "NixOS", .directory = "/srv", .user = "root" },
+        .cols = 80,
+        .rows = 24,
+        .term = "xterm-ghostty",
+    }).argv(alloc);
+    const want = [_][]const u8{
+        "wsl.exe", "--distribution", "NixOS", "--cd", "/srv", "--user", "root", "--exec",
+    };
+    for (want, who[0..want.len]) |expect, got| try testing.expectEqualStrings(expect, got);
 }
 
 test {
