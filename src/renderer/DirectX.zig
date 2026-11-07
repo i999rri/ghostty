@@ -419,11 +419,15 @@ pub fn initAtlasTexture(self: *const DirectX, atlas: anytype) !Texture {
         .bgra => .bgra,
         else => @panic("unsupported atlas format for DirectX texture"),
     };
+    // The texture starts empty, as it does for Metal and OpenGL: the
+    // atlas is uploaded by syncAtlasTexture on the first frame that
+    // draws from it. SwapChain.init asks for a 1x1 placeholder with
+    // `data = undefined`, so the data must not be read here.
     return Texture.init(
         .{ .device_cell = &self.presentation.device, .format = format },
         atlas.size,
         atlas.size,
-        atlas.data,
+        null,
     );
 }
 
