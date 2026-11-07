@@ -14,6 +14,9 @@ step: *std.Build.Step,
 
 /// The final static library file
 output: std.Build.LazyPath,
+/// The import library of a Windows DLL; consumers linking against the
+/// DLL need it, and it must track the DLL's exports.
+implib: ?std.Build.LazyPath,
 dsym: ?std.Build.LazyPath,
 pkg_config: ?std.Build.LazyPath,
 pkg_config_static: ?std.Build.LazyPath,
@@ -72,6 +75,7 @@ pub fn initStatic(
     return .{
         .step = override.step orelse combined.step,
         .output = override.output,
+        .implib = null,
 
         // Static libraries cannot have dSYMs because they aren't linked.
         .dsym = null,
@@ -172,6 +176,10 @@ pub fn initShared(
     return .{
         .step = &lib.step,
         .output = lib.getEmittedBin(),
+        .implib = if (deps.config.target.result.os.tag == .windows)
+            lib.getEmittedImplib()
+        else
+            null,
         .dsym = dsymutil,
         .pkg_config = pcs.shared,
         .pkg_config_static = pcs.static,
@@ -201,6 +209,7 @@ pub fn initMacOSUniversal(
     return .{
         .step = universal.step,
         .output = universal.output,
+        .implib = null,
 
         // You can't run dsymutil on a universal binary, you have to
         // do it on the individual binaries.
@@ -230,6 +239,12 @@ pub fn install(self: *const GhosttyLib, name: []const u8) void {
             "share/pkgconfig/ghostty-internal-static.pc",
         ).step);
     }
+}
+
+pub fn installImplib(self: *const GhosttyLib, name: []const u8) void {
+    const b = self.step.owner;
+    const implib = self.implib orelse return;
+    b.getInstallStep().dependOn(&b.addInstallLibFile(implib, name).step);
 }
 
 pub fn installHeader(self: *const GhosttyLib) void {

@@ -666,6 +666,7 @@ pub fn init(
             .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
             .resources_dir = global.resourcesDir().host(),
             .term = config.term,
+            .wsl_bridge = config.@"wsl-bridge",
             .rt_pre_exec_info = .init(config),
             .rt_post_fork_info = .init(config),
         });
@@ -2098,6 +2099,19 @@ fn resolvePathForOpening(
     path: []const u8,
 ) Allocator.Error!?[]const u8 {
     if (!std.fs.path.isAbsolute(path)) {
+        // On Windows, ':' is only valid in a file path at offset 1 (the
+        // drive-letter separator). Anywhere else it indicates either a
+        // URL scheme separator (e.g. "https://..."), an NTFS alternate
+        // data stream, or a line/column suffix tacked on by the URL
+        // regex (e.g. "src/foo.zig:42:10"). Resolving any of those against
+        // pwd produces a path the NT layer rejects with
+        // STATUS_OBJECT_NAME_INVALID, which Zig's std.fs.accessAbsolute
+        // treats as `unreachable` and panics (issue
+        // i999rri/GhosttyWin32#12). Skip resolution in that case — the
+        // caller falls back to opening `path` as-is.
+        if (builtin.os.tag == .windows and
+            std.mem.indexOfScalar(u8, path, ':') != null) return null;
+
         const terminal_pwd = self.io.terminal.getPwd() orelse {
             return null;
         };
@@ -6527,6 +6541,12 @@ fn presentSurface(self: *Surface) !void {
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.io.getProcessInfo(info);
+}
+
+/// The foreground process name of a WSL bridge session, copied into
+/// `out`; 0 when the session has no bridge-reported name.
+pub fn foregroundProcessName(self: *Surface, out: []u8) usize {
+    return self.io.foregroundProcessName(out);
 }
 
 test "queueIo frees allocated writes in readonly mode" {

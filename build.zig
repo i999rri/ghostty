@@ -232,11 +232,30 @@ pub fn build(b: *std.Build) !void {
             lib_shared.installHeader(); // Only need one header
             if (config.target.result.os.tag == .windows) {
                 lib_shared.install("ghostty-internal.dll");
+                // The import library must track the DLL's exports or new
+                // C APIs fail to link in the host.
+                lib_shared.installImplib("ghostty-internal.lib");
                 lib_static.install("ghostty-internal-static.lib");
             } else {
                 lib_shared.install("ghostty-internal.so");
                 lib_static.install("ghostty-internal.a");
             }
+        }
+    }
+
+    // The WSL bridge's in-distro half (GhosttyWin32#206) is a Linux
+    // binary regardless of host target; pkg/wsl builds it alongside the
+    // Windows-side module that libghostty imports.
+    if (config.target.result.os.tag == .windows) {
+        if (b.lazyDependency("wsl", .{
+            .target = config.target,
+            .optimize = config.optimize,
+        })) |dep| {
+            const wsl_bridge = dep.artifact("ghostty-wsl-bridge");
+            b.installArtifact(wsl_bridge);
+            b.step("wsl-bridge", "Build only the WSL bridge's in-distro binary").dependOn(
+                &b.addInstallArtifact(wsl_bridge, .{}).step,
+            );
         }
     }
 

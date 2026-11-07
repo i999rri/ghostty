@@ -110,6 +110,14 @@ pub const Backend = union(Kind) {
             .exec => |*exec| exec.getProcessInfo(info),
         };
     }
+
+    /// The foreground process name of a WSL bridge session, copied into
+    /// `out`; 0 when the session has no bridge-reported name.
+    pub fn foregroundProcessName(self: *Backend, out: []u8) usize {
+        return switch (self.*) {
+            .exec => |*exec| exec.foregroundProcessName(out),
+        };
+    }
 };
 
 /// Termio thread data. See termio.ThreadData for docs.
