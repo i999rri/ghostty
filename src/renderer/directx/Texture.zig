@@ -115,14 +115,16 @@ pub fn init(opts: Options, width: usize, height: usize, data: ?[]const u8) Error
         const data_ptr: ?*const anyopaque, const data_len: u32 = if (data) |d| blk: {
             // Validate that the slice covers a full texture's worth of
             // bytes for this format. On mismatch we refuse to call the
-            // C side rather than letting D3D11 over-read.
-            _ = planTextureUpload(opts.format, w32, h32, d.len) catch |err| {
+            // C side rather than letting D3D11 over-read. The GPU is
+            // handed the planned size, not the slice's length: it reads
+            // exactly that many bytes, and the length need not fit u32.
+            const required = planTextureUpload(opts.format, w32, h32, d.len) catch |err| {
                 log.err("dx_create_texture skipped: {}x{} format={s} data.len={} err={s}", .{
                     width, height, @tagName(opts.format), d.len, @errorName(err),
                 });
                 break :blk .{ null, 0 };
             };
-            break :blk .{ @ptrCast(d.ptr), @intCast(d.len) };
+            break :blk .{ @ptrCast(d.ptr), required };
         } else .{ null, 0 };
         handle = dx.dx_create_texture(dev, w32, h32, dxgiFormat(opts.format), data_ptr, data_len);
         if (handle == null) log.err("dx_create_texture failed: {}x{}", .{ width, height });
@@ -146,14 +148,14 @@ pub fn replaceRegion(self: *Self, offset_x: usize, offset_y: usize, rep_width: u
     const dev = cell.* orelse return;
     const w32: u32 = @intCast(rep_width);
     const h32: u32 = @intCast(rep_height);
-    _ = planTextureUpload(self.format, w32, h32, data.len) catch |err| {
+    const required = planTextureUpload(self.format, w32, h32, data.len) catch |err| {
         log.err("dx_update_texture_region skipped: region={}x{} format={s} data.len={} err={s}", .{
             rep_width, rep_height, @tagName(self.format), data.len, @errorName(err),
         });
         return;
     };
     if (self.dx_handle) |h| {
-        dx.dx_update_texture_region(dev, h, @intCast(offset_x), @intCast(offset_y), w32, h32, @ptrCast(data.ptr), @intCast(data.len));
+        dx.dx_update_texture_region(dev, h, @intCast(offset_x), @intCast(offset_y), w32, h32, @ptrCast(data.ptr), required);
     }
 }
 
